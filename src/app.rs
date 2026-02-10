@@ -37,6 +37,7 @@ pub struct App {
     pub finder_results: Vec<FinderMatch>,
     pub finder_cursor: usize,
     pub preview_active: bool,
+    pub preview_focused: bool,
     pub preview_state: PreviewState,
     finder: Finder,
     page_size: usize,
@@ -58,6 +59,7 @@ impl App {
             finder_results: Vec::new(),
             finder_cursor: 0,
             preview_active: false,
+            preview_focused: false,
             preview_state: PreviewState::default(),
             finder: Finder::new(),
             page_size: 20,
@@ -178,6 +180,60 @@ impl App {
     }
 
     fn dispatch_action(&mut self, action: Action) {
+        // When preview is focused, intercept navigation to scroll preview
+        if self.preview_active && self.preview_focused {
+            match action {
+                Action::CursorUp => {
+                    self.preview_state.scroll_up(1);
+                    return;
+                }
+                Action::CursorDown => {
+                    self.preview_state.scroll_down(1);
+                    return;
+                }
+                Action::HalfPageUp => {
+                    let half = self.page_size / 2;
+                    self.preview_state.scroll_up(half);
+                    return;
+                }
+                Action::HalfPageDown => {
+                    let half = self.page_size / 2;
+                    self.preview_state.scroll_down(half);
+                    return;
+                }
+                Action::PageUp => {
+                    let ps = self.page_size;
+                    self.preview_state.scroll_up(ps);
+                    return;
+                }
+                Action::PageDown => {
+                    let ps = self.page_size;
+                    self.preview_state.scroll_down(ps);
+                    return;
+                }
+                Action::CursorTop => {
+                    self.preview_state.scroll = 0;
+                    return;
+                }
+                Action::CursorBottom => {
+                    self.preview_state.scroll = self.preview_state.total_lines.saturating_sub(1);
+                    return;
+                }
+                Action::ExitToNormal => {
+                    self.preview_focused = false;
+                    self.mode = Mode::Normal;
+                    self.normal_state = NormalState::default();
+                    return;
+                }
+                // SwitchPane / FocusLeft / FocusRight toggle focus (handled below)
+                Action::SwitchPane | Action::FocusLeftPane | Action::FocusRightPane => {}
+                // Quit and TogglePreview pass through
+                Action::Quit | Action::TogglePreview => {}
+                // Everything else is a no-op when preview is focused
+                _ => return,
+            }
+        }
+
         match action {
             Action::None => {}
             Action::Quit => self.should_quit = true,
@@ -210,11 +266,18 @@ impl App {
                 }
             }
             Action::ParentDir => self.active_pane_mut().go_parent(),
-            Action::SwitchPane => {
-                self.active_pane = self.active_pane.other();
+            Action::SwitchPane | Action::FocusLeftPane | Action::FocusRightPane => {
+                if self.preview_active {
+                    self.preview_focused = !self.preview_focused;
+                } else {
+                    match action {
+                        Action::SwitchPane => self.active_pane = self.active_pane.other(),
+                        Action::FocusLeftPane => self.active_pane = PaneId::Left,
+                        Action::FocusRightPane => self.active_pane = PaneId::Right,
+                        _ => unreachable!(),
+                    }
+                }
             }
-            Action::FocusLeftPane => self.active_pane = PaneId::Left,
-            Action::FocusRightPane => self.active_pane = PaneId::Right,
 
             // Mode transitions
             Action::EnterSelect => self.mode = Mode::Select,
@@ -606,6 +669,7 @@ impl App {
         if self.preview_active {
             self.update_preview();
         } else {
+            self.preview_focused = false;
             self.preview_state.clear();
         }
     }

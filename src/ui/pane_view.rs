@@ -22,15 +22,15 @@ pub fn draw_panes(f: &mut Frame, app: &App, area: Rect) {
             PaneId::Left => (chunks[0], chunks[1]),
             PaneId::Right => (chunks[1], chunks[0]),
         };
-        draw_single_pane(f, app.active_pane_state(), true, file_chunk);
-        draw_preview_pane(f, &app.preview_state, preview_chunk);
+        draw_single_pane(f, app.active_pane_state(), !app.preview_focused, file_chunk);
+        draw_preview_pane(f, &app.preview_state, app.preview_focused, preview_chunk);
     } else {
         draw_single_pane(f, &app.left_pane, app.active_pane == PaneId::Left, chunks[0]);
         draw_single_pane(f, &app.right_pane, app.active_pane == PaneId::Right, chunks[1]);
     }
 }
 
-fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, area: Rect) {
+fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, is_focused: bool, area: Rect) {
     let title = match &state.path {
         Some(p) => format!(
             " [PREVIEW] {} ",
@@ -41,10 +41,11 @@ fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, area: Rect) {
         None => " [PREVIEW] ".to_string(),
     };
 
+    let border_color = if is_focused { Color::Cyan } else { Color::Magenta };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     let visible_height = inner.height as usize;

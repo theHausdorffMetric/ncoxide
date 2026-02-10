@@ -45,6 +45,15 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("")
     };
 
+    let preview_span = if app.preview_focused {
+        Span::styled(
+            "│  PRV  ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("")
+    };
+
     let count_span = Span::styled(
         format!("│  {} items  ", pane.entries.len()),
         Style::default().fg(Color::DarkGray),
@@ -72,7 +81,7 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("")
     };
 
-    let line = Line::from(vec![mode_span, path_span, sel_span, count_span, input_span]);
+    let line = Line::from(vec![mode_span, path_span, sel_span, preview_span, count_span, input_span]);
     let para = Paragraph::new(line).style(Style::default().bg(Color::Black));
     f.render_widget(para, area);
 }

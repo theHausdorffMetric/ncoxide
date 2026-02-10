@@ -59,9 +59,8 @@ pub fn handle_key(key: KeyEvent, state: &mut NormalState) -> Action {
         KeyCode::Char('r') => Action::EnterInput(InputKind::Rename),
         KeyCode::Char('d') => Action::DeleteSelected,
         KeyCode::Char('y') => Action::CopyToOther,
-        KeyCode::Char('p') => Action::MoveToOther,
         KeyCode::Char('.') => Action::ToggleHidden,
-        KeyCode::Char('P') => Action::TogglePreview,
+        KeyCode::Char('p') | KeyCode::Char('P') => Action::TogglePreview,
         KeyCode::Char('?') => Action::ShowHelp,
 
         // Shift+J/K: move + select

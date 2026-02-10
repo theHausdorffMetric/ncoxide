@@ -20,7 +20,6 @@ pub fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char(' ') => Action::EnterSpace,
         KeyCode::Char('d') => Action::DeleteSelected,
         KeyCode::Char('y') => Action::CopyToOther,
-        KeyCode::Char('p') => Action::MoveToOther,
 
         // Pane switching
         KeyCode::Tab => Action::SwitchPane,
