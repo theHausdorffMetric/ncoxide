@@ -4,6 +4,14 @@ version = "0.1.0"
 edition = "2024"
 description = "Modal dual-pane file commander with helix-inspired interface"
 license = "MIT"
+authors = ["Dan Probst <dan@probst.dev>"]
+repository = "https://git.sr.ht/~danprobst/ncoxide"
+homepage = "https://git.sr.ht/~danprobst/ncoxide"
+readme = "README.md"
+keywords = ["file-manager", "tui", "terminal", "dual-pane", "helix"]
+categories = ["command-line-utilities", "filesystem"]
+rust-version = "1.85"
+exclude = [".claude/"]
 
 [dependencies]
 ratatui = "0.30"
