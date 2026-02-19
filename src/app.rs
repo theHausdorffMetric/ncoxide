@@ -99,6 +99,7 @@ impl App {
 
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(crate::error::NcError::Io)?;
+        terminal.clear().map_err(crate::error::NcError::Io)?;
 
         let result = self.event_loop(&mut terminal);
 
