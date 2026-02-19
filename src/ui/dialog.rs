@@ -1,7 +1,18 @@
+use std::path::PathBuf;
+
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+
+/// Action to execute when a Confirm dialog is accepted.
+#[derive(Debug, Clone)]
+pub enum ConfirmAction {
+    Delete,
+    OverwriteCopy { sources: Vec<PathBuf>, target: PathBuf },
+    OverwriteMove { sources: Vec<PathBuf>, target: PathBuf },
+    OverwriteRename { source: PathBuf, new_name: String },
+}
 
 /// Dialog types the app can show.
 #[derive(Debug, Clone)]
@@ -9,6 +20,7 @@ pub enum Dialog {
     Confirm {
         title: String,
         message: String,
+        action: ConfirmAction,
     },
     Error {
         message: String,
@@ -22,7 +34,7 @@ pub enum Dialog {
 pub fn draw_dialog(f: &mut Frame, dialog: &Dialog) {
     let area = f.area();
     let (title, message, border_color) = match dialog {
-        Dialog::Confirm { title, message } => (title.as_str(), message.as_str(), Color::Yellow),
+        Dialog::Confirm { title, message, .. } => (title.as_str(), message.as_str(), Color::Yellow),
         Dialog::Error { message } => ("Error", message.as_str(), Color::Red),
         Dialog::Info { title, message } => (title.as_str(), message.as_str(), Color::Cyan),
     };

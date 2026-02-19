@@ -4,13 +4,23 @@ use std::path::{Path, PathBuf};
 use crate::error::{NcError, Result};
 
 /// Copy a file or directory to a target directory.
+/// Symlinks are preserved as symlinks rather than followed.
 pub fn copy_to(source: &Path, target_dir: &Path) -> Result<()> {
     let name = source
         .file_name()
         .ok_or_else(|| NcError::FileOperation("Invalid source path".into()))?;
     let dest = target_dir.join(name);
 
-    if source.is_dir() {
+    let meta = fs::symlink_metadata(source).map_err(NcError::Io)?;
+    if meta.is_symlink() {
+        let link_target = fs::read_link(source).map_err(NcError::Io)?;
+        // Remove existing destination if present so symlink creation succeeds
+        if dest.exists() || dest.symlink_metadata().is_ok() {
+            let _ = fs::remove_file(&dest);
+        }
+        std::os::unix::fs::symlink(&link_target, &dest).map_err(NcError::Io)?;
+        Ok(())
+    } else if meta.is_dir() {
         copy_dir_recursive(source, &dest)
     } else {
         fs::copy(source, &dest).map_err(NcError::Io)?;
@@ -24,13 +34,38 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let entry = entry.map_err(NcError::Io)?;
         let src_path = entry.path();
         let dst_path = dst.join(entry.file_name());
-        if src_path.is_dir() {
+        let meta = fs::symlink_metadata(&src_path).map_err(NcError::Io)?;
+        if meta.is_symlink() {
+            let link_target = fs::read_link(&src_path).map_err(NcError::Io)?;
+            if dst_path.exists() || dst_path.symlink_metadata().is_ok() {
+                let _ = fs::remove_file(&dst_path);
+            }
+            std::os::unix::fs::symlink(&link_target, &dst_path).map_err(NcError::Io)?;
+        } else if meta.is_dir() {
             copy_dir_recursive(&src_path, &dst_path)?;
         } else {
             fs::copy(&src_path, &dst_path).map_err(NcError::Io)?;
         }
     }
     Ok(())
+}
+
+/// Calculate total size of a path (recursive for directories).
+/// Uses symlink_metadata to avoid following symlinks.
+pub fn path_size(path: &Path) -> Result<u64> {
+    let meta = fs::symlink_metadata(path).map_err(NcError::Io)?;
+    if meta.is_symlink() || meta.is_file() {
+        Ok(meta.len())
+    } else if meta.is_dir() {
+        let mut total = 0u64;
+        for entry in fs::read_dir(path).map_err(NcError::Io)? {
+            let entry = entry.map_err(NcError::Io)?;
+            total += path_size(&entry.path()).unwrap_or(0);
+        }
+        Ok(total)
+    } else {
+        Ok(0)
+    }
 }
 
 /// Move a file or directory to a target directory.

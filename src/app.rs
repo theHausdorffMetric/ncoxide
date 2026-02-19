@@ -1,5 +1,5 @@
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -20,7 +20,7 @@ use crate::pane::{PaneId, PaneState};
 use crate::platform;
 use crate::preview::{self, PreviewState};
 use crate::ui;
-use crate::ui::dialog::Dialog;
+use crate::ui::dialog::{ConfirmAction, Dialog};
 
 /// Application state. Owns both panes and current mode.
 pub struct App {
@@ -127,7 +127,8 @@ impl App {
 
             // Poll for events (50ms timeout for responsive UI)
             if event::poll(Duration::from_millis(50)).map_err(crate::error::NcError::Io)?
-                && let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)? {
+                && let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)?
+                && key.kind == crossterm::event::KeyEventKind::Press {
                     self.handle_key(key);
                 }
         }
@@ -165,10 +166,11 @@ impl App {
 
     fn handle_dialog_key(&mut self, key: KeyEvent, dialog: &Dialog) {
         match dialog {
-            Dialog::Confirm { .. } => match key.code {
+            Dialog::Confirm { action, .. } => match key.code {
                 crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
+                    let action = action.clone();
                     self.dialog = None;
-                    self.confirm_delete();
+                    self.execute_confirm(action);
                 }
                 _ => {
                     self.dialog = None;
@@ -176,6 +178,21 @@ impl App {
             },
             Dialog::Error { .. } | Dialog::Info { .. } => {
                 self.dialog = None;
+            }
+        }
+    }
+
+    fn execute_confirm(&mut self, action: ConfirmAction) {
+        match action {
+            ConfirmAction::Delete => self.execute_delete(),
+            ConfirmAction::OverwriteCopy { sources, target } => {
+                self.execute_copy(&sources, &target);
+            }
+            ConfirmAction::OverwriteMove { sources, target } => {
+                self.execute_move(&sources, &target);
+            }
+            ConfirmAction::OverwriteRename { source, new_name } => {
+                self.execute_rename(&source, &new_name);
             }
         }
     }
@@ -400,7 +417,7 @@ impl App {
         // Auto-return to Normal after single-key modes
         match self.mode {
             Mode::Space | Mode::Goto => {
-                if !matches!(action, Action::None | Action::EnterInput(_) | Action::EnterFinder) {
+                if !matches!(action, Action::None | Action::EnterSpace | Action::EnterGoto | Action::EnterInput(_) | Action::EnterFinder) {
                     self.mode = Mode::Normal;
                 }
             }
@@ -440,15 +457,49 @@ impl App {
     fn do_copy(&mut self) {
         let target = self.other_pane_cwd();
         let paths = self.active_pane_state().selected_paths();
-        let mut errors = Vec::new();
+        if paths.is_empty() {
+            return;
+        }
 
-        for path in &paths {
-            if let Err(e) = operations::copy_to(path, &target) {
+        let collisions: Vec<_> = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .filter(|name| target.join(name).exists())
+            .map(|name| name.to_string_lossy().to_string())
+            .collect();
+
+        if collisions.is_empty() {
+            self.execute_copy(&paths, &target);
+        } else {
+            let message = if collisions.len() == 1 {
+                format!("Overwrite {}?", collisions[0])
+            } else {
+                format!("Overwrite {} items?", collisions.len())
+            };
+            self.dialog = Some(Dialog::Confirm {
+                title: "Confirm Copy".into(),
+                message,
+                action: ConfirmAction::OverwriteCopy {
+                    sources: paths,
+                    target,
+                },
+            });
+        }
+    }
+
+    fn execute_copy(&mut self, paths: &[PathBuf], target: &Path) {
+        if let Some(msg) = self.check_disk_space(paths, target) {
+            self.dialog = Some(Dialog::Error { message: msg });
+            return;
+        }
+
+        let mut errors = Vec::new();
+        for path in paths {
+            if let Err(e) = operations::copy_to(path, target) {
                 errors.push(format!("{}: {e}", path.display()));
             }
         }
 
-        // Refresh both panes
         let _ = self.left_pane.refresh();
         let _ = self.right_pane.refresh();
 
@@ -462,10 +513,45 @@ impl App {
     fn do_move(&mut self) {
         let target = self.other_pane_cwd();
         let paths = self.active_pane_state().selected_paths();
-        let mut errors = Vec::new();
+        if paths.is_empty() {
+            return;
+        }
 
-        for path in &paths {
-            if let Err(e) = operations::move_to(path, &target) {
+        let collisions: Vec<_> = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .filter(|name| target.join(name).exists())
+            .map(|name| name.to_string_lossy().to_string())
+            .collect();
+
+        if collisions.is_empty() {
+            self.execute_move(&paths, &target);
+        } else {
+            let message = if collisions.len() == 1 {
+                format!("Overwrite {}?", collisions[0])
+            } else {
+                format!("Overwrite {} items?", collisions.len())
+            };
+            self.dialog = Some(Dialog::Confirm {
+                title: "Confirm Move".into(),
+                message,
+                action: ConfirmAction::OverwriteMove {
+                    sources: paths,
+                    target,
+                },
+            });
+        }
+    }
+
+    fn execute_move(&mut self, paths: &[PathBuf], target: &Path) {
+        if let Some(msg) = self.check_disk_space(paths, target) {
+            self.dialog = Some(Dialog::Error { message: msg });
+            return;
+        }
+
+        let mut errors = Vec::new();
+        for path in paths {
+            if let Err(e) = operations::move_to(path, target) {
                 errors.push(format!("{}: {e}", path.display()));
             }
         }
@@ -494,10 +580,11 @@ impl App {
         self.dialog = Some(Dialog::Confirm {
             title: "Confirm Delete".into(),
             message,
+            action: ConfirmAction::Delete,
         });
     }
 
-    fn confirm_delete(&mut self) {
+    fn execute_delete(&mut self) {
         let paths = self.active_pane_state().selected_paths();
         let mut errors = Vec::new();
 
@@ -521,14 +608,57 @@ impl App {
         if new_name.is_empty() {
             return;
         }
-        if let Some(entry) = self.active_pane_state().current_entry().cloned() {
-            if let Err(e) = operations::rename(&entry.path, new_name) {
-                self.dialog = Some(Dialog::Error {
-                    message: format!("Rename failed: {e}"),
-                });
-            } else {
-                let _ = self.active_pane_mut().refresh();
+        let Some(entry) = self.active_pane_state().current_entry().cloned() else {
+            return;
+        };
+        let parent = match entry.path.parent() {
+            Some(p) => p,
+            None => return,
+        };
+
+        if parent.join(new_name).exists() {
+            self.dialog = Some(Dialog::Confirm {
+                title: "Confirm Rename".into(),
+                message: format!("Overwrite {new_name}?"),
+                action: ConfirmAction::OverwriteRename {
+                    source: entry.path.clone(),
+                    new_name: new_name.to_string(),
+                },
+            });
+        } else {
+            self.execute_rename(&entry.path, new_name);
+        }
+    }
+
+    fn execute_rename(&mut self, source: &Path, new_name: &str) {
+        if let Err(e) = operations::rename(source, new_name) {
+            self.dialog = Some(Dialog::Error {
+                message: format!("Rename failed: {e}"),
+            });
+        } else {
+            let _ = self.active_pane_mut().refresh();
+        }
+    }
+
+    /// Check if there's enough disk space for the operation.
+    /// Returns Some(error message) if space is insufficient, None if OK or undetermined.
+    fn check_disk_space(&self, sources: &[PathBuf], target: &Path) -> Option<String> {
+        let free = platform::get_free_disk_space(target)?;
+        let mut total_size = 0u64;
+        for source in sources {
+            // If path_size fails, skip (fail-open)
+            if let Ok(size) = operations::path_size(source) {
+                total_size = total_size.saturating_add(size);
             }
+        }
+        if total_size > free {
+            Some(format!(
+                "Not enough disk space. Need {} but only {} available.",
+                platform::format_file_size(total_size),
+                platform::format_file_size(free),
+            ))
+        } else {
+            None
         }
     }
 
