@@ -15,8 +15,8 @@ pub fn copy_to(source: &Path, target_dir: &Path) -> Result<()> {
     if meta.is_symlink() {
         let link_target = fs::read_link(source).map_err(NcError::Io)?;
         // Remove existing destination if present so symlink creation succeeds
-        if dest.exists() || dest.symlink_metadata().is_ok() {
-            let _ = fs::remove_file(&dest);
+        if dest.symlink_metadata().is_ok() {
+            fs::remove_file(&dest).map_err(NcError::Io)?;
         }
         std::os::unix::fs::symlink(&link_target, &dest).map_err(NcError::Io)?;
         Ok(())
@@ -37,8 +37,8 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
         let meta = fs::symlink_metadata(&src_path).map_err(NcError::Io)?;
         if meta.is_symlink() {
             let link_target = fs::read_link(&src_path).map_err(NcError::Io)?;
-            if dst_path.exists() || dst_path.symlink_metadata().is_ok() {
-                let _ = fs::remove_file(&dst_path);
+            if dst_path.symlink_metadata().is_ok() {
+                fs::remove_file(&dst_path).map_err(NcError::Io)?;
             }
             std::os::unix::fs::symlink(&link_target, &dst_path).map_err(NcError::Io)?;
         } else if meta.is_dir() {
@@ -80,17 +80,25 @@ pub fn move_to(source: &Path, target_dir: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(_) => {
             copy_to(source, target_dir)?;
-            delete(source)?;
+            if let Err(e) = delete(source) {
+                return Err(NcError::FileOperation(format!(
+                    "Copied to {} but failed to remove source: {e}",
+                    dest.display()
+                )));
+            }
             Ok(())
         }
     }
 }
 
 /// Delete a file or directory (recursive for directories).
+/// Uses symlink_metadata so symlinks are removed as links, not followed.
 pub fn delete(path: &Path) -> Result<()> {
-    if path.is_dir() {
+    let meta = fs::symlink_metadata(path).map_err(NcError::Io)?;
+    if meta.is_dir() {
         fs::remove_dir_all(path).map_err(NcError::Io)
     } else {
+        // Covers regular files, symlinks, and other non-directory types
         fs::remove_file(path).map_err(NcError::Io)
     }
 }

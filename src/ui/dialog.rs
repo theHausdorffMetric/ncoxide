@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 /// Action to execute when a Confirm dialog is accepted.
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    Delete,
+    Delete { paths: Vec<PathBuf> },
     OverwriteCopy { sources: Vec<PathBuf>, target: PathBuf },
     OverwriteMove { sources: Vec<PathBuf>, target: PathBuf },
     OverwriteRename { source: PathBuf, new_name: String },

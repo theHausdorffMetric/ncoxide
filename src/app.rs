@@ -184,7 +184,7 @@ impl App {
 
     fn execute_confirm(&mut self, action: ConfirmAction) {
         match action {
-            ConfirmAction::Delete => self.execute_delete(),
+            ConfirmAction::Delete { paths } => self.execute_delete(&paths),
             ConfirmAction::OverwriteCopy { sources, target } => {
                 self.execute_copy(&sources, &target);
             }
@@ -464,7 +464,7 @@ impl App {
         let collisions: Vec<_> = paths
             .iter()
             .filter_map(|p| p.file_name())
-            .filter(|name| target.join(name).exists())
+            .filter(|name| target.join(name).symlink_metadata().is_ok())
             .map(|name| name.to_string_lossy().to_string())
             .collect();
 
@@ -520,7 +520,7 @@ impl App {
         let collisions: Vec<_> = paths
             .iter()
             .filter_map(|p| p.file_name())
-            .filter(|name| target.join(name).exists())
+            .filter(|name| target.join(name).symlink_metadata().is_ok())
             .map(|name| name.to_string_lossy().to_string())
             .collect();
 
@@ -580,15 +580,14 @@ impl App {
         self.dialog = Some(Dialog::Confirm {
             title: "Confirm Delete".into(),
             message,
-            action: ConfirmAction::Delete,
+            action: ConfirmAction::Delete { paths },
         });
     }
 
-    fn execute_delete(&mut self) {
-        let paths = self.active_pane_state().selected_paths();
+    fn execute_delete(&mut self, paths: &[PathBuf]) {
         let mut errors = Vec::new();
 
-        for path in &paths {
+        for path in paths {
             if let Err(e) = operations::delete(path) {
                 errors.push(format!("{}: {e}", path.display()));
             }
@@ -616,7 +615,7 @@ impl App {
             None => return,
         };
 
-        if parent.join(new_name).exists() {
+        if parent.join(new_name).symlink_metadata().is_ok() {
             self.dialog = Some(Dialog::Confirm {
                 title: "Confirm Rename".into(),
                 message: format!("Overwrite {new_name}?"),
