@@ -75,7 +75,7 @@ impl Finder {
         }
 
         // Sort by score descending
-        results.sort_by(|a, b| b.score.cmp(&a.score));
+        results.sort_by_key(|m| std::cmp::Reverse(m.score));
         results.truncate(max_results);
         results
     }

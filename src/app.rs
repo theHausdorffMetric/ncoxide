@@ -11,12 +11,13 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 
+use crate::config::Config;
 use crate::error::Result;
 use crate::finder::{Finder, FinderMatch};
 use crate::mode::normal::NormalState;
 use crate::mode::{Action, InputKind, Mode};
 use crate::pane::operations;
-use crate::pane::{PaneId, PaneState};
+use crate::pane::{PaneId, PaneState, SortBy, SortDirection};
 use crate::platform;
 use crate::preview::{self, PreviewState};
 use crate::ui;
@@ -39,15 +40,27 @@ pub struct App {
     pub preview_active: bool,
     pub preview_focused: bool,
     pub preview_state: PreviewState,
+    pub config: Config,
     finder: Finder,
     page_size: usize,
 }
 
 impl App {
+    /// Construct with default configuration (used by tests and as a fallback).
     pub fn new(left_path: PathBuf, right_path: PathBuf) -> Self {
+        Self::new_with_config(left_path, right_path, Config::default())
+    }
+
+    /// Construct, seeding both panes from the loaded configuration.
+    pub fn new_with_config(left_path: PathBuf, right_path: PathBuf, config: Config) -> Self {
+        let mut left_pane = PaneState::new(PaneId::Left, left_path);
+        let mut right_pane = PaneState::new(PaneId::Right, right_path);
+        Self::apply_general(&mut left_pane, &config);
+        Self::apply_general(&mut right_pane, &config);
+
         App {
-            left_pane: PaneState::new(PaneId::Left, left_path),
-            right_pane: PaneState::new(PaneId::Right, right_path),
+            left_pane,
+            right_pane,
             active_pane: PaneId::Left,
             mode: Mode::Normal,
             input_buffer: String::new(),
@@ -61,8 +74,43 @@ impl App {
             preview_active: false,
             preview_focused: false,
             preview_state: PreviewState::default(),
+            config,
             finder: Finder::new(),
             page_size: 20,
+        }
+    }
+
+    /// Seed a pane's view settings from `[general]` config, then re-read.
+    fn apply_general(pane: &mut PaneState, config: &Config) {
+        pane.show_hidden = config.general.show_hidden;
+        if let Some(sort_by) = SortBy::parse(&config.general.sort_by) {
+            pane.sort_by = sort_by;
+        }
+        pane.sort_dir = if config.general.sort_ascending {
+            SortDirection::Ascending
+        } else {
+            SortDirection::Descending
+        };
+        let _ = pane.refresh();
+    }
+
+    /// Navigate the active pane to bookmark `index` (0-based). Unset bookmarks
+    /// are ignored; a bookmark that no longer points at a directory surfaces
+    /// an error dialog.
+    fn goto_bookmark(&mut self, index: usize) {
+        let Some(path) = self.config.bookmarks.get(index).cloned() else {
+            return;
+        };
+        if path.is_dir() {
+            self.active_pane_mut().goto(path);
+        } else {
+            self.dialog = Some(Dialog::Error {
+                message: format!(
+                    "Bookmark {} is not an accessible directory: {}",
+                    index + 1,
+                    path.display()
+                ),
+            });
         }
     }
 
@@ -135,8 +183,9 @@ impl App {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
-        // If there's a dialog, handle it first
-        if let Some(ref dialog) = self.dialog.clone() {
+        // If there's a dialog, handle it first. Take it out so handlers can
+        // freely mutate `self` (and set a follow-up dialog) without cloning.
+        if let Some(dialog) = self.dialog.take() {
             self.handle_dialog_key(key, dialog);
             return;
         }
@@ -164,21 +213,16 @@ impl App {
         self.dispatch_action(action);
     }
 
-    fn handle_dialog_key(&mut self, key: KeyEvent, dialog: &Dialog) {
-        match dialog {
-            Dialog::Confirm { action, .. } => match key.code {
-                crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y') => {
-                    let action = action.clone();
-                    self.dialog = None;
-                    self.execute_confirm(action);
-                }
-                _ => {
-                    self.dialog = None;
-                }
-            },
-            Dialog::Error { .. } | Dialog::Info { .. } => {
-                self.dialog = None;
-            }
+    fn handle_dialog_key(&mut self, key: KeyEvent, dialog: Dialog) {
+        // The dialog was already taken out of `self` by the caller, so any
+        // unhandled key simply dismisses it.
+        if let Dialog::Confirm { action, .. } = dialog
+            && matches!(
+                key.code,
+                crossterm::event::KeyCode::Char('y') | crossterm::event::KeyCode::Char('Y')
+            )
+        {
+            self.execute_confirm(action);
         }
     }
 
@@ -360,26 +404,27 @@ impl App {
                     self.active_pane_mut().goto(prev);
                 }
             }
-            Action::GotoBookmark(_) => {} // TODO: bookmark support
+            Action::GotoBookmark(index) => self.goto_bookmark(index),
 
             // Commands
             Action::ExecuteCommand(ref cmd) => self.execute_command_str(cmd),
 
             // Settings
             Action::ToggleHidden => {
+                let id = self.active_pane;
                 let pane = self.active_pane_mut();
                 pane.show_hidden = !pane.show_hidden;
-                let _ = pane.refresh();
+                self.refresh_pane(id);
             }
             Action::SetSort(sort_by) => {
-                let pane = self.active_pane_mut();
-                pane.sort_by = sort_by;
-                let _ = pane.refresh();
+                let id = self.active_pane;
+                self.active_pane_mut().sort_by = sort_by;
+                self.refresh_pane(id);
             }
             Action::SetFilter(ref filter) => {
-                let pane = self.active_pane_mut();
-                pane.filter = filter.clone();
-                let _ = pane.refresh();
+                let id = self.active_pane;
+                self.active_pane_mut().filter = filter.clone();
+                self.refresh_pane(id);
             }
 
             // Info
@@ -415,13 +460,17 @@ impl App {
         }
 
         // Auto-return to Normal after single-key modes
-        match self.mode {
-            Mode::Space | Mode::Goto => {
-                if !matches!(action, Action::None | Action::EnterSpace | Action::EnterGoto | Action::EnterInput(_) | Action::EnterFinder) {
-                    self.mode = Mode::Normal;
-                }
-            }
-            _ => {}
+        if matches!(self.mode, Mode::Space | Mode::Goto)
+            && !matches!(
+                action,
+                Action::None
+                    | Action::EnterSpace
+                    | Action::EnterGoto
+                    | Action::EnterInput(_)
+                    | Action::EnterFinder
+            )
+        {
+            self.mode = Mode::Normal;
         }
 
         // Update preview when cursor changes
@@ -439,10 +488,9 @@ impl App {
             Some(InputKind::Rename) => self.do_rename(&buf),
             Some(InputKind::Mkdir) => self.do_mkdir(&buf),
             Some(InputKind::Search) => {
-                let filter = if buf.is_empty() { None } else { Some(buf) };
-                let pane = self.active_pane_mut();
-                pane.filter = filter;
-                let _ = pane.refresh();
+                let id = self.active_pane;
+                self.active_pane_mut().filter = if buf.is_empty() { None } else { Some(buf) };
+                self.refresh_pane(id);
             }
             Some(InputKind::GlobSelect) => {
                 self.active_pane_mut().select_by_glob(&buf);
@@ -454,6 +502,61 @@ impl App {
         }
     }
 
+    /// Refresh a single pane, surfacing any failure (e.g. the cwd was
+    /// unmounted or its permissions revoked) as an error dialog instead of
+    /// leaving a stale listing on screen.
+    fn refresh_pane(&mut self, id: PaneId) {
+        let result = match id {
+            PaneId::Left => self.left_pane.refresh(),
+            PaneId::Right => self.right_pane.refresh(),
+        };
+        if let Err(e) = result {
+            self.dialog = Some(Dialog::Error {
+                message: format!("Failed to refresh directory: {e}"),
+            });
+        }
+    }
+
+    fn refresh_both(&mut self) {
+        self.refresh_pane(PaneId::Left);
+        self.refresh_pane(PaneId::Right);
+    }
+
+    /// Build an overwrite-confirmation message for the names in `paths` that
+    /// already exist in `target`, or `None` if there are no collisions.
+    fn collision_message(paths: &[PathBuf], target: &Path) -> Option<String> {
+        let collisions: Vec<_> = paths
+            .iter()
+            .filter_map(|p| p.file_name())
+            .filter(|name| target.join(name).symlink_metadata().is_ok())
+            .map(|name| name.to_string_lossy().to_string())
+            .collect();
+        match collisions.as_slice() {
+            [] => None,
+            [one] => Some(format!("Overwrite {one}?")),
+            many => Some(format!("Overwrite {} items?", many.len())),
+        }
+    }
+
+    /// Run `op` over every path, collect per-path failures, refresh both
+    /// panes, and surface any failures as an error dialog.
+    fn run_batch(&mut self, paths: &[PathBuf], mut op: impl FnMut(&Path) -> Result<()>) {
+        let mut errors = Vec::new();
+        for path in paths {
+            if let Err(e) = op(path) {
+                errors.push(format!("{}: {e}", path.display()));
+            }
+        }
+
+        self.refresh_both();
+
+        if !errors.is_empty() {
+            self.dialog = Some(Dialog::Error {
+                message: errors.join("\n"),
+            });
+        }
+    }
+
     fn do_copy(&mut self) {
         let target = self.other_pane_cwd();
         let paths = self.active_pane_state().selected_paths();
@@ -461,29 +564,18 @@ impl App {
             return;
         }
 
-        let collisions: Vec<_> = paths
-            .iter()
-            .filter_map(|p| p.file_name())
-            .filter(|name| target.join(name).symlink_metadata().is_ok())
-            .map(|name| name.to_string_lossy().to_string())
-            .collect();
-
-        if collisions.is_empty() {
-            self.execute_copy(&paths, &target);
-        } else {
-            let message = if collisions.len() == 1 {
-                format!("Overwrite {}?", collisions[0])
-            } else {
-                format!("Overwrite {} items?", collisions.len())
-            };
-            self.dialog = Some(Dialog::Confirm {
-                title: "Confirm Copy".into(),
-                message,
-                action: ConfirmAction::OverwriteCopy {
-                    sources: paths,
-                    target,
-                },
-            });
+        match Self::collision_message(&paths, &target) {
+            None => self.execute_copy(&paths, &target),
+            Some(message) => {
+                self.dialog = Some(Dialog::Confirm {
+                    title: "Confirm Copy".into(),
+                    message,
+                    action: ConfirmAction::OverwriteCopy {
+                        sources: paths,
+                        target,
+                    },
+                })
+            }
         }
     }
 
@@ -492,22 +584,7 @@ impl App {
             self.dialog = Some(Dialog::Error { message: msg });
             return;
         }
-
-        let mut errors = Vec::new();
-        for path in paths {
-            if let Err(e) = operations::copy_to(path, target) {
-                errors.push(format!("{}: {e}", path.display()));
-            }
-        }
-
-        let _ = self.left_pane.refresh();
-        let _ = self.right_pane.refresh();
-
-        if !errors.is_empty() {
-            self.dialog = Some(Dialog::Error {
-                message: errors.join("\n"),
-            });
-        }
+        self.run_batch(paths, |path| operations::copy_to(path, target));
     }
 
     fn do_move(&mut self) {
@@ -517,29 +594,18 @@ impl App {
             return;
         }
 
-        let collisions: Vec<_> = paths
-            .iter()
-            .filter_map(|p| p.file_name())
-            .filter(|name| target.join(name).symlink_metadata().is_ok())
-            .map(|name| name.to_string_lossy().to_string())
-            .collect();
-
-        if collisions.is_empty() {
-            self.execute_move(&paths, &target);
-        } else {
-            let message = if collisions.len() == 1 {
-                format!("Overwrite {}?", collisions[0])
-            } else {
-                format!("Overwrite {} items?", collisions.len())
-            };
-            self.dialog = Some(Dialog::Confirm {
-                title: "Confirm Move".into(),
-                message,
-                action: ConfirmAction::OverwriteMove {
-                    sources: paths,
-                    target,
-                },
-            });
+        match Self::collision_message(&paths, &target) {
+            None => self.execute_move(&paths, &target),
+            Some(message) => {
+                self.dialog = Some(Dialog::Confirm {
+                    title: "Confirm Move".into(),
+                    message,
+                    action: ConfirmAction::OverwriteMove {
+                        sources: paths,
+                        target,
+                    },
+                })
+            }
         }
     }
 
@@ -548,22 +614,7 @@ impl App {
             self.dialog = Some(Dialog::Error { message: msg });
             return;
         }
-
-        let mut errors = Vec::new();
-        for path in paths {
-            if let Err(e) = operations::move_to(path, target) {
-                errors.push(format!("{}: {e}", path.display()));
-            }
-        }
-
-        let _ = self.left_pane.refresh();
-        let _ = self.right_pane.refresh();
-
-        if !errors.is_empty() {
-            self.dialog = Some(Dialog::Error {
-                message: errors.join("\n"),
-            });
-        }
+        self.run_batch(paths, |path| operations::move_to(path, target));
     }
 
     fn confirm_delete_dialog(&mut self) {
@@ -585,22 +636,7 @@ impl App {
     }
 
     fn execute_delete(&mut self, paths: &[PathBuf]) {
-        let mut errors = Vec::new();
-
-        for path in paths {
-            if let Err(e) = operations::delete(path) {
-                errors.push(format!("{}: {e}", path.display()));
-            }
-        }
-
-        let _ = self.left_pane.refresh();
-        let _ = self.right_pane.refresh();
-
-        if !errors.is_empty() {
-            self.dialog = Some(Dialog::Error {
-                message: errors.join("\n"),
-            });
-        }
+        self.run_batch(paths, operations::delete);
     }
 
     fn do_rename(&mut self, new_name: &str) {
@@ -610,9 +646,8 @@ impl App {
         let Some(entry) = self.active_pane_state().current_entry().cloned() else {
             return;
         };
-        let parent = match entry.path.parent() {
-            Some(p) => p,
-            None => return,
+        let Some(parent) = entry.path.parent() else {
+            return;
         };
 
         if parent.join(new_name).symlink_metadata().is_ok() {
@@ -635,7 +670,7 @@ impl App {
                 message: format!("Rename failed: {e}"),
             });
         } else {
-            let _ = self.active_pane_mut().refresh();
+            self.refresh_pane(self.active_pane);
         }
     }
 
@@ -671,8 +706,18 @@ impl App {
                 message: format!("Mkdir failed: {e}"),
             });
         } else {
-            let _ = self.active_pane_mut().refresh();
+            self.refresh_pane(self.active_pane);
         }
+    }
+
+    /// Editor command: the configured `[general] editor` if set, otherwise
+    /// `$EDITOR` (falling back to `vi`).
+    fn editor_command(&self) -> String {
+        self.config
+            .general
+            .editor
+            .clone()
+            .unwrap_or_else(platform::get_default_editor)
     }
 
     fn edit_file(&mut self) {
@@ -680,7 +725,7 @@ impl App {
             if entry.is_dir {
                 return;
             }
-            let editor = platform::get_default_editor();
+            let editor = self.editor_command();
             // Temporarily exit raw mode for the editor
             disable_raw_mode().ok();
             execute!(io::stdout(), LeaveAlternateScreen).ok();
@@ -689,13 +734,13 @@ impl App {
 
             execute!(io::stdout(), EnterAlternateScreen).ok();
             enable_raw_mode().ok();
-            let _ = self.active_pane_mut().refresh();
+            self.refresh_pane(self.active_pane);
         }
     }
 
     fn open_file(&mut self, path: &PathBuf) {
-        // For now, open with $EDITOR
-        let editor = platform::get_default_editor();
+        // For now, open with the configured editor / $EDITOR
+        let editor = self.editor_command();
         disable_raw_mode().ok();
         execute!(io::stdout(), LeaveAlternateScreen).ok();
 
@@ -703,7 +748,7 @@ impl App {
 
         execute!(io::stdout(), EnterAlternateScreen).ok();
         enable_raw_mode().ok();
-        let _ = self.active_pane_mut().refresh();
+        self.refresh_pane(self.active_pane);
     }
 
     fn show_file_info(&mut self) {
@@ -841,5 +886,74 @@ impl App {
         let cwd = self.active_pane_state().cwd.clone();
         self.finder_results = self.finder.find(&cwd, &self.input_buffer, 20);
         self.finder_cursor = 0;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{Config, GeneralConfig};
+    use std::fs;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ncoxide_app_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_new_with_config_seeds_panes() {
+        let dir = temp_dir("seed");
+        fs::write(dir.join(".hidden"), "").unwrap();
+        fs::write(dir.join("visible.txt"), "").unwrap();
+
+        let config = Config {
+            general: GeneralConfig {
+                show_hidden: true,
+                sort_by: "size".into(),
+                sort_ascending: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let app = App::new_with_config(dir.clone(), dir.clone(), config);
+        // show_hidden from config is applied, so the hidden file is listed.
+        assert!(app.left_pane.show_hidden);
+        assert_eq!(app.left_pane.sort_by, SortBy::Size);
+        assert_eq!(app.left_pane.sort_dir, SortDirection::Descending);
+        assert!(app.left_pane.entries.iter().any(|e| e.name == ".hidden"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_goto_bookmark_navigates_and_reports_missing() {
+        let root = temp_dir("bookmark");
+        let target = root.join("target");
+        fs::create_dir_all(&target).unwrap();
+
+        let config = Config {
+            bookmarks: vec![target.clone(), root.join("does_not_exist")],
+            ..Default::default()
+        };
+        let mut app = App::new_with_config(root.clone(), root.clone(), config);
+
+        // Bookmark 0 -> existing directory: active pane navigates there.
+        app.goto_bookmark(0);
+        assert_eq!(app.active_pane_state().cwd, target);
+        assert!(app.dialog.is_none());
+
+        // Bookmark 1 -> missing path: surfaces an error dialog, no navigation.
+        app.goto_bookmark(1);
+        assert!(matches!(app.dialog, Some(Dialog::Error { .. })));
+
+        // Out-of-range index is a no-op.
+        app.dialog = None;
+        app.goto_bookmark(99);
+        assert!(app.dialog.is_none());
+
+        let _ = fs::remove_dir_all(&root);
     }
 }

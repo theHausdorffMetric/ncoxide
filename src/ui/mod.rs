@@ -5,11 +5,46 @@ pub mod status_line;
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout};
+use ratatui::style::Color;
 
 use crate::app::App;
+use crate::config::ColorConfig;
+
+/// Resolved file-list colors, parsed once per frame from [`ColorConfig`].
+pub struct Theme {
+    pub directory: Color,
+    pub symlink: Color,
+    pub executable: Color,
+    pub selected: Color,
+    pub cursor: Color,
+    pub active_border: Color,
+    pub inactive_border: Color,
+}
+
+/// Parse a color name/hex (`"blue"`, `"#1e1e2e"`), falling back to `default`
+/// so an unset or invalid value keeps the built-in appearance.
+fn parse_color(value: &str, default: Color) -> Color {
+    value.parse().unwrap_or(default)
+}
+
+impl Theme {
+    pub fn from_config(c: &ColorConfig) -> Self {
+        Theme {
+            directory: parse_color(&c.directory, Color::Blue),
+            symlink: parse_color(&c.symlink, Color::Magenta),
+            executable: parse_color(&c.executable, Color::Green),
+            selected: parse_color(&c.selected, Color::Yellow),
+            cursor: parse_color(&c.cursor, Color::DarkGray),
+            active_border: parse_color(&c.active_border, Color::Cyan),
+            inactive_border: parse_color(&c.inactive_border, Color::DarkGray),
+        }
+    }
+}
 
 /// Top-level draw function: lays out panes + status line.
 pub fn draw(f: &mut Frame, app: &App) {
+    let theme = Theme::from_config(&app.config.colors);
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -19,7 +54,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     // Draw dual panes
-    pane_view::draw_panes(f, app, chunks[0]);
+    pane_view::draw_panes(f, app, &theme, chunks[0]);
 
     // Draw status line
     status_line::draw_status_line(f, app, chunks[1]);
@@ -162,4 +197,29 @@ fn finder_overlay(f: &mut Frame, app: &App) {
 
     let para = Paragraph::new(lines).block(block);
     f.render_widget(para, rect);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_theme_from_default_config_matches_builtin_colors() {
+        // The default ColorConfig names must parse to the historical built-in
+        // colors so the unconfigured appearance is unchanged.
+        let theme = Theme::from_config(&ColorConfig::default());
+        assert_eq!(theme.directory, Color::Blue);
+        assert_eq!(theme.symlink, Color::Magenta);
+        assert_eq!(theme.executable, Color::Green);
+        assert_eq!(theme.selected, Color::Yellow);
+        assert_eq!(theme.cursor, Color::DarkGray);
+        assert_eq!(theme.active_border, Color::Cyan);
+        assert_eq!(theme.inactive_border, Color::DarkGray);
+    }
+
+    #[test]
+    fn test_parse_color_falls_back_on_invalid() {
+        assert_eq!(parse_color("not-a-real-color", Color::Red), Color::Red);
+        assert_eq!(parse_color("green", Color::Red), Color::Green);
+    }
 }

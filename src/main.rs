@@ -1,8 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::Parser;
 
 use ncoxide::app::App;
+use ncoxide::config::Config;
 
 /// ncoxide — Modal dual-pane file commander
 #[derive(Parser)]
@@ -29,18 +30,27 @@ fn main() {
         eprintln!("Failed to set up logging: {e}");
     }
 
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
-    let left_path = cli.left.unwrap_or_else(|| cwd.clone());
-    let right_path = cli.right.unwrap_or(cwd);
+    let config = Config::load();
 
-    let mut app = App::new(left_path, right_path);
+    // Starting directory precedence: CLI flag > config > current dir.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));
+    let left_path = cli
+        .left
+        .or_else(|| config.general.left_dir.clone())
+        .unwrap_or_else(|| cwd.clone());
+    let right_path = cli
+        .right
+        .or_else(|| config.general.right_dir.clone())
+        .unwrap_or(cwd);
+
+    let mut app = App::new_with_config(left_path, right_path, config);
     if let Err(e) = app.run() {
         eprintln!("ncoxide error: {e}");
         std::process::exit(1);
     }
 }
 
-fn setup_logging(log_path: &PathBuf) -> Result<(), fern::InitError> {
+fn setup_logging(log_path: &Path) -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(

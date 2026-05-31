@@ -19,6 +19,20 @@ pub enum SortBy {
     Extension,
 }
 
+impl SortBy {
+    /// Parse a sort key from a config/command string. Returns `None` for
+    /// unrecognized values so the caller can keep its existing default.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "name" => Some(SortBy::Name),
+            "size" => Some(SortBy::Size),
+            "date" => Some(SortBy::Date),
+            "ext" | "extension" => Some(SortBy::Extension),
+            _ => None,
+        }
+    }
+}
+
 /// Sort direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SortDirection {
@@ -41,14 +55,20 @@ pub struct FileEntry {
 
 impl FileEntry {
     pub fn from_path(path: &Path) -> Result<Self> {
-        let metadata = fs::symlink_metadata(path).map_err(NcError::Io)?;
-        let is_symlink = metadata.is_symlink();
+        let link_meta = fs::symlink_metadata(path).map_err(NcError::Io)?;
+        let is_symlink = link_meta.is_symlink();
 
-        // For symlinks, try to get the target metadata for size/type info
-        let resolved_meta = if is_symlink {
-            fs::metadata(path).unwrap_or(metadata.clone())
+        // For symlinks, follow once to resolve target type/size. On failure
+        // (e.g. a dangling symlink) fall back to the link's own metadata and
+        // treat it as a non-directory rather than reusing the link metadata
+        // as if it were the target.
+        let (is_dir, size, modified) = if is_symlink {
+            match fs::metadata(path) {
+                Ok(target) => (target.is_dir(), target.len(), target.modified().ok()),
+                Err(_) => (false, link_meta.len(), link_meta.modified().ok()),
+            }
         } else {
-            metadata.clone()
+            (link_meta.is_dir(), link_meta.len(), link_meta.modified().ok())
         };
 
         let name = path
@@ -61,12 +81,12 @@ impl FileEntry {
         Ok(FileEntry {
             name,
             path: path.to_path_buf(),
-            is_dir: resolved_meta.is_dir(),
+            is_dir,
             is_symlink,
             is_hidden,
-            size: resolved_meta.len(),
-            modified: resolved_meta.modified().ok(),
-            permissions: platform::format_permissions(&metadata),
+            size,
+            modified,
+            permissions: platform::format_permissions(&link_meta),
         })
     }
 
@@ -295,5 +315,15 @@ mod tests {
         assert_eq!(paths.len(), 1);
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_sort_by_parse() {
+        assert_eq!(SortBy::parse("name"), Some(SortBy::Name));
+        assert_eq!(SortBy::parse("size"), Some(SortBy::Size));
+        assert_eq!(SortBy::parse("date"), Some(SortBy::Date));
+        assert_eq!(SortBy::parse("ext"), Some(SortBy::Extension));
+        assert_eq!(SortBy::parse("extension"), Some(SortBy::Extension));
+        assert_eq!(SortBy::parse("bogus"), None);
     }
 }

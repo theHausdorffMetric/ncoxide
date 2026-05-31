@@ -60,7 +60,9 @@ pub fn path_size(path: &Path) -> Result<u64> {
         let mut total = 0u64;
         for entry in fs::read_dir(path).map_err(NcError::Io)? {
             let entry = entry.map_err(NcError::Io)?;
-            total += path_size(&entry.path()).unwrap_or(0);
+            // Propagate errors so an unreadable subtree doesn't silently
+            // under-count the size used by the disk-space pre-check.
+            total = total.saturating_add(path_size(&entry.path())?);
         }
         Ok(total)
     } else {
@@ -114,9 +116,13 @@ pub fn rename(source: &Path, new_name: &str) -> Result<PathBuf> {
 }
 
 /// Create a new directory.
+///
+/// Uses `create_dir` (not `create_dir_all`) so it creates exactly one
+/// directory and errors if the target already exists, preserving the
+/// caller's collision handling.
 pub fn mkdir(parent: &Path, name: &str) -> Result<PathBuf> {
     let path = parent.join(name);
-    fs::create_dir_all(&path).map_err(NcError::Io)?;
+    fs::create_dir(&path).map_err(NcError::Io)?;
     Ok(path)
 }
 
@@ -212,6 +218,35 @@ mod tests {
 
         let new_dir = mkdir(&tmp, "newdir").unwrap();
         assert!(new_dir.is_dir());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_mkdir_existing_errors() {
+        let tmp = std::env::temp_dir().join("ncoxide_test_mkdir_existing");
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+
+        // First creation succeeds; a second with the same name must error
+        // (create_dir, not create_dir_all) so collision handling is preserved.
+        mkdir(&tmp, "dup").unwrap();
+        assert!(mkdir(&tmp, "dup").is_err());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_path_size_recursive() {
+        let tmp = std::env::temp_dir().join("ncoxide_test_path_size");
+        let _ = fs::remove_dir_all(&tmp);
+        let inner = tmp.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(tmp.join("a.txt"), "12345").unwrap(); // 5 bytes
+        fs::write(inner.join("b.txt"), "678").unwrap(); // 3 bytes
+
+        let size = path_size(&tmp).unwrap();
+        assert_eq!(size, 8, "expected sum of nested file sizes");
 
         let _ = fs::remove_dir_all(&tmp);
     }

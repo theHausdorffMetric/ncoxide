@@ -8,9 +8,10 @@ use crate::app::App;
 use crate::pane::{PaneId, PaneState};
 use crate::platform;
 use crate::preview;
+use crate::ui::Theme;
 
 /// Draw both panes side-by-side.
-pub fn draw_panes(f: &mut Frame, app: &App, area: Rect) {
+pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
@@ -22,15 +23,21 @@ pub fn draw_panes(f: &mut Frame, app: &App, area: Rect) {
             PaneId::Left => (chunks[0], chunks[1]),
             PaneId::Right => (chunks[1], chunks[0]),
         };
-        draw_single_pane(f, app.active_pane_state(), !app.preview_focused, file_chunk);
-        draw_preview_pane(f, &app.preview_state, app.preview_focused, preview_chunk);
+        draw_single_pane(f, app.active_pane_state(), !app.preview_focused, theme, file_chunk);
+        draw_preview_pane(f, &app.preview_state, app.preview_focused, theme, preview_chunk);
     } else {
-        draw_single_pane(f, &app.left_pane, app.active_pane == PaneId::Left, chunks[0]);
-        draw_single_pane(f, &app.right_pane, app.active_pane == PaneId::Right, chunks[1]);
+        draw_single_pane(f, &app.left_pane, app.active_pane == PaneId::Left, theme, chunks[0]);
+        draw_single_pane(f, &app.right_pane, app.active_pane == PaneId::Right, theme, chunks[1]);
     }
 }
 
-fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, is_focused: bool, area: Rect) {
+fn draw_preview_pane(
+    f: &mut Frame,
+    state: &preview::PreviewState,
+    is_focused: bool,
+    theme: &Theme,
+    area: Rect,
+) {
     let title = match &state.path {
         Some(p) => format!(
             " [PREVIEW] {} ",
@@ -41,7 +48,11 @@ fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, is_focused: b
         None => " [PREVIEW] ".to_string(),
     };
 
-    let border_color = if is_focused { Color::Cyan } else { Color::Magenta };
+    let border_color = if is_focused {
+        theme.active_border
+    } else {
+        Color::Magenta
+    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)
@@ -74,11 +85,11 @@ fn draw_preview_pane(f: &mut Frame, state: &preview::PreviewState, is_focused: b
     f.render_widget(para, area);
 }
 
-fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, area: Rect) {
+fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Theme, area: Rect) {
     let border_style = if is_active {
-        Style::default().fg(Color::Cyan)
+        Style::default().fg(theme.active_border)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(theme.inactive_border)
     };
 
     let title = format!(" {} ", platform::display_path(&pane.cwd));
@@ -122,20 +133,22 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, area: Rect
 
             let style = match (is_cursor && is_active, is_selected) {
                 (true, true) => Style::default()
-                    .bg(Color::DarkGray)
-                    .fg(Color::Yellow)
+                    .bg(theme.cursor)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD),
-                (true, false) => Style::default().bg(Color::DarkGray).fg(Color::White),
+                (true, false) => Style::default().bg(theme.cursor).fg(Color::White),
                 (false, true) => Style::default()
-                    .fg(Color::Yellow)
+                    .fg(theme.selected)
                     .add_modifier(Modifier::BOLD),
                 (false, false) => {
                     if entry.is_dir {
-                        Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD)
+                        Style::default()
+                            .fg(theme.directory)
+                            .add_modifier(Modifier::BOLD)
                     } else if entry.is_symlink {
-                        Style::default().fg(Color::Magenta)
+                        Style::default().fg(theme.symlink)
                     } else if entry.permissions.contains('x') && !entry.is_dir {
-                        Style::default().fg(Color::Green)
+                        Style::default().fg(theme.executable)
                     } else {
                         Style::default().fg(Color::White)
                     }
@@ -165,7 +178,7 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, area: Rect
         .row_highlight_style(Style::default());
 
     let mut state = TableState::default();
-    if is_active && !pane.entries.is_empty() {
+    if is_active && pane.cursor < pane.entries.len() {
         state.select(Some(pane.cursor));
     }
 
