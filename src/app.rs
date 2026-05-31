@@ -953,3 +953,220 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
     }
 }
+
+/// End-to-end tests: drive key sequences through `handle_key` (the same entry
+/// point the event loop uses) and render with `ratatui`'s `TestBackend`, then
+/// assert on both `App` state and the rendered frame. No real terminal is
+/// touched (we never call `App::run`).
+#[cfg(test)]
+mod integration {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+    use std::fs;
+
+    /// Create a uniquely-named temp dir containing `files` and an `App` rooted
+    /// there. `name` must be unique per test so parallel runs don't collide.
+    fn app_with(name: &str, files: &[&str]) -> (PathBuf, App) {
+        let dir = std::env::temp_dir().join(format!("ncoxide_it_{}_{name}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        for f in files {
+            fs::write(dir.join(f), b"contents\n").unwrap();
+        }
+        let app = App::new(dir.clone(), dir.clone());
+        (dir, app)
+    }
+
+    fn key(c: char) -> KeyEvent {
+        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+    }
+
+    fn code(c: KeyCode) -> KeyEvent {
+        KeyEvent::new(c, KeyModifiers::NONE)
+    }
+
+    fn type_str(app: &mut App, s: &str) {
+        for c in s.chars() {
+            app.handle_key(key(c));
+        }
+    }
+
+    /// Render the app to a `TestBackend` and flatten the buffer to text.
+    fn render(app: &App, w: u16, h: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        let area = *buf.area();
+        let mut out = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    #[test]
+    fn test_navigation_moves_cursor_and_renders() {
+        let (dir, mut app) = app_with("nav", &["a.txt", "b.txt", "c.txt"]);
+        assert_eq!(app.left_pane.cursor, 0);
+
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.cursor, 1);
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.cursor, 2);
+        app.handle_key(key('k'));
+        assert_eq!(app.left_pane.cursor, 1);
+
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("a.txt"));
+        assert!(screen.contains("c.txt"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_enter_and_parent_directory() {
+        let (dir, mut app) = app_with("enter", &[]);
+        fs::create_dir_all(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub").join("inner.txt"), b"x").unwrap();
+        let _ = app.left_pane.refresh();
+
+        // "sub" sorts first (directories before files).
+        app.handle_key(key('l'));
+        assert!(app.left_pane.cwd.ends_with("sub"));
+        assert!(app.left_pane.entries.iter().any(|e| e.name == "inner.txt"));
+
+        app.handle_key(key('h'));
+        assert_eq!(app.left_pane.cwd, dir);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_tab_switches_pane() {
+        let (dir, mut app) = app_with("tab", &["a.txt"]);
+        assert_eq!(app.active_pane, PaneId::Left);
+        app.handle_key(code(KeyCode::Tab));
+        assert_eq!(app.active_pane, PaneId::Right);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_select_all_shows_count_in_status() {
+        let (dir, mut app) = app_with("select", &["a.txt", "b.txt", "c.txt"]);
+        app.handle_key(key('v')); // enter Select mode
+        app.handle_key(key('a')); // select all
+        assert_eq!(app.left_pane.selection_count(), 3);
+
+        // Wide enough that the long temp-dir path doesn't clip the status text.
+        let screen = render(&app, 200, 24);
+        assert!(screen.contains("selected"), "status should show selection count");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_delete_confirm_then_accept_removes_file() {
+        let (dir, mut app) = app_with("del_accept", &["target.txt", "keep.txt"]);
+        // cursor on "keep.txt"? entries sorted: keep.txt, target.txt
+        // Put cursor on target.txt.
+        let idx = app
+            .left_pane
+            .entries
+            .iter()
+            .position(|e| e.name == "target.txt")
+            .unwrap();
+        app.left_pane.cursor = idx;
+
+        app.handle_key(key('d'));
+        assert!(app.dialog.is_some(), "delete should raise a confirm dialog");
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("Delete"));
+        assert!(screen.contains("[y]es"));
+
+        app.handle_key(key('y'));
+        assert!(app.dialog.is_none());
+        assert!(!dir.join("target.txt").exists());
+        assert!(dir.join("keep.txt").exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_delete_dismissed_keeps_file() {
+        let (dir, mut app) = app_with("del_dismiss", &["target.txt"]);
+        app.handle_key(key('d'));
+        assert!(app.dialog.is_some());
+        app.handle_key(key('n')); // any non-y dismisses
+        assert!(app.dialog.is_none());
+        assert!(dir.join("target.txt").exists());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_mkdir_via_space_menu() {
+        let (dir, mut app) = app_with("mkdir", &["a.txt"]);
+        app.handle_key(key(' ')); // space menu
+        app.handle_key(key('n')); // new directory -> input mode
+        type_str(&mut app, "created");
+        app.handle_key(code(KeyCode::Enter));
+
+        assert!(dir.join("created").is_dir());
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.left_pane.entries.iter().any(|e| e.name == "created"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_help_overlay_shows_and_dismisses() {
+        let (dir, mut app) = app_with("help", &["a.txt"]);
+        app.handle_key(key('?'));
+        assert!(app.show_help);
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("Navigation"));
+
+        app.handle_key(code(KeyCode::Esc));
+        assert!(!app.show_help);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_preview_toggle_renders_preview_pane() {
+        let (dir, mut app) = app_with("preview", &["a.txt"]);
+        app.handle_key(key('p'));
+        assert!(app.preview_active);
+        let screen = render(&app, 100, 24);
+        assert!(screen.contains("PREVIEW"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_command_mode_prompt_and_escape() {
+        let (dir, mut app) = app_with("command", &["a.txt"]);
+        app.handle_key(key(':'));
+        assert_eq!(app.mode, Mode::Command);
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("CMD"));
+
+        app.handle_key(code(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_render_is_panic_free_at_extreme_sizes() {
+        let (dir, app) = app_with("empty", &[]); // empty directory
+        // Tiny and large terminals, empty listing — must not panic.
+        let _ = render(&app, 1, 1);
+        let _ = render(&app, 20, 3);
+        let _ = render(&app, 200, 60);
+        let _ = fs::remove_dir_all(&dir);
+    }
+}
