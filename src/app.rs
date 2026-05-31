@@ -250,7 +250,7 @@ impl App {
                     return;
                 }
                 Action::CursorDown => {
-                    self.preview_state.scroll_down(1);
+                    self.preview_state.scroll_down(1, self.page_size);
                     return;
                 }
                 Action::HalfPageUp => {
@@ -260,7 +260,7 @@ impl App {
                 }
                 Action::HalfPageDown => {
                     let half = self.page_size / 2;
-                    self.preview_state.scroll_down(half);
+                    self.preview_state.scroll_down(half, self.page_size);
                     return;
                 }
                 Action::PageUp => {
@@ -270,15 +270,15 @@ impl App {
                 }
                 Action::PageDown => {
                     let ps = self.page_size;
-                    self.preview_state.scroll_down(ps);
+                    self.preview_state.scroll_down(ps, self.page_size);
                     return;
                 }
                 Action::CursorTop => {
-                    self.preview_state.scroll = 0;
+                    self.preview_state.scroll_to_top();
                     return;
                 }
                 Action::CursorBottom => {
-                    self.preview_state.scroll = self.preview_state.total_lines.saturating_sub(1);
+                    self.preview_state.scroll_to_bottom(self.page_size);
                     return;
                 }
                 Action::ExitToNormal => {
@@ -861,15 +861,11 @@ impl App {
             return;
         }
         if entry.is_dir {
-            self.preview_state.clear();
-            self.preview_state.path = Some(entry.path);
-            self.preview_state.lines.push(preview::PreviewLine {
-                spans: vec![(
-                    "[Directory]".to_string(),
-                    ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray),
-                )],
-            });
-            self.preview_state.total_lines = 1;
+            self.preview_state = PreviewState::message(
+                Some(entry.path),
+                "[Directory]",
+                ratatui::style::Color::DarkGray,
+            );
         } else {
             self.preview_state = preview::load_preview(&entry.path);
         }

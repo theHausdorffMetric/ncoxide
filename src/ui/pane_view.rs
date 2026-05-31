@@ -1,7 +1,6 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
 
 use crate::app::App;
@@ -38,14 +37,17 @@ fn draw_preview_pane(
     theme: &Theme,
     area: Rect,
 ) {
-    let title = match &state.path {
-        Some(p) => format!(
-            " [PREVIEW] {} ",
-            p.file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default()
-        ),
-        None => " [PREVIEW] ".to_string(),
+    let name = state
+        .path
+        .as_ref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let status = state.status_text();
+    let title = if status.is_empty() {
+        format!(" [PREVIEW] {name} ")
+    } else {
+        format!(" [PREVIEW] {name} — {status} ")
     };
 
     let border_color = if is_focused {
@@ -61,27 +63,7 @@ fn draw_preview_pane(
     let inner = block.inner(area);
     let visible_height = inner.height as usize;
 
-    let lines: Vec<Line> = state
-        .lines
-        .iter()
-        .skip(state.scroll)
-        .take(visible_height)
-        .enumerate()
-        .map(|(i, pline)| {
-            let line_num = state.scroll + i + 1;
-            let num_span = Span::styled(
-                format!("{line_num:4} "),
-                Style::default().fg(Color::DarkGray),
-            );
-            let mut spans = vec![num_span];
-            for (text, style) in &pline.spans {
-                spans.push(Span::styled(text.as_str(), *style));
-            }
-            Line::from(spans)
-        })
-        .collect();
-
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(state.render(visible_height)).block(block);
     f.render_widget(para, area);
 }
 

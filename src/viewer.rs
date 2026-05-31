@@ -1,5 +1,6 @@
 use std::io;
 use std::path::Path;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
@@ -9,14 +10,20 @@ use crossterm::terminal::{
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::style::{Color, Style};
-use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 
-use crate::preview::{self, PreviewState};
+use crate::preview::{self, LineCounter, PreviewState};
 
-/// Standalone full-screen file viewer. Read-only, scroll with j/k/PgUp/PgDn, q to quit.
+/// Standalone full-screen file viewer. Read-only pager: scroll with
+/// j/k/PgUp/PgDn, g/G for top/bottom, q to quit. Backed by the windowed
+/// preview reader, so it opens arbitrarily large files with bounded memory.
 pub fn view_file(path: &Path) -> crate::error::Result<()> {
     let mut state = preview::load_preview(path);
+    // For large (windowed) files, count total lines in the background so the
+    // status can show an accurate "line X / N". Aborts on drop (function exit).
+    let counter = state
+        .is_large()
+        .then(|| LineCounter::spawn(path.to_path_buf()));
 
     enable_raw_mode().map_err(crate::error::NcError::Io)?;
     let mut stdout = io::stdout();
@@ -26,35 +33,34 @@ pub fn view_file(path: &Path) -> crate::error::Result<()> {
     let mut terminal = Terminal::new(backend).map_err(crate::error::NcError::Io)?;
 
     loop {
+        if let Some(c) = &counter {
+            state.set_line_count(c.count(), c.is_done());
+        }
+
         terminal
             .draw(|f| draw_viewer(f, &state, path))
             .map_err(crate::error::NcError::Io)?;
 
+        // Poll so the view can refresh periodically (e.g. background line
+        // counting) instead of blocking indefinitely on input.
+        if !event::poll(Duration::from_millis(250)).map_err(crate::error::NcError::Io)? {
+            continue;
+        }
+
         if let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)? {
+            let page = terminal
+                .size()
+                .map(|s| s.height as usize)
+                .unwrap_or(24)
+                .saturating_sub(2);
             match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Char('j') | KeyCode::Down => state.scroll_down(1),
+                KeyCode::Char('j') | KeyCode::Down => state.scroll_down(1, page),
                 KeyCode::Char('k') | KeyCode::Up => state.scroll_up(1),
-                KeyCode::PageDown | KeyCode::Char(' ') => {
-                    let page = terminal
-                        .size()
-                        .map(|s| s.height as usize)
-                        .unwrap_or(20)
-                        .saturating_sub(4);
-                    state.scroll_down(page);
-                }
-                KeyCode::PageUp => {
-                    let page = terminal
-                        .size()
-                        .map(|s| s.height as usize)
-                        .unwrap_or(20)
-                        .saturating_sub(4);
-                    state.scroll_up(page);
-                }
-                KeyCode::Char('g') => state.scroll = 0,
-                KeyCode::Char('G') => {
-                    state.scroll = state.total_lines.saturating_sub(1);
-                }
+                KeyCode::PageDown | KeyCode::Char(' ') => state.scroll_down(page, page),
+                KeyCode::PageUp => state.scroll_up(page),
+                KeyCode::Char('g') => state.scroll_to_top(),
+                KeyCode::Char('G') => state.scroll_to_bottom(page),
                 _ => {}
             }
         }
@@ -69,12 +75,7 @@ pub fn view_file(path: &Path) -> crate::error::Result<()> {
 
 fn draw_viewer(f: &mut ratatui::Frame, state: &PreviewState, path: &Path) {
     let area = f.area();
-    let title = format!(
-        " {} — line {}/{} (q to quit) ",
-        path.display(),
-        state.scroll + 1,
-        state.total_lines
-    );
+    let title = format!(" {} — {} (q to quit) ", path.display(), state.status_text());
 
     let block = Block::default()
         .title(title)
@@ -84,27 +85,7 @@ fn draw_viewer(f: &mut ratatui::Frame, state: &PreviewState, path: &Path) {
     let inner = block.inner(area);
     let visible_height = inner.height as usize;
 
-    let lines: Vec<Line> = state
-        .lines
-        .iter()
-        .skip(state.scroll)
-        .take(visible_height)
-        .enumerate()
-        .map(|(i, pline)| {
-            let line_num = state.scroll + i + 1;
-            let num_span = Span::styled(
-                format!("{line_num:4} "),
-                Style::default().fg(Color::DarkGray),
-            );
-            let mut spans = vec![num_span];
-            for (text, style) in &pline.spans {
-                spans.push(Span::styled(text.as_str(), *style));
-            }
-            Line::from(spans)
-        })
-        .collect();
-
-    let para = Paragraph::new(lines).block(block);
+    let para = Paragraph::new(state.render(visible_height)).block(block);
     f.render_widget(para, area);
 }
 
@@ -114,8 +95,8 @@ mod tests {
 
     #[test]
     fn test_view_file_nonexistent() {
-        // Just verify load_preview handles missing files
+        // load_preview handles missing files with a message line.
         let state = preview::load_preview(Path::new("/nonexistent/file"));
-        assert!(!state.lines.is_empty()); // Should have an error message line
+        assert!(!state.render(1).is_empty());
     }
 }
