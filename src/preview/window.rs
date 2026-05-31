@@ -158,6 +158,90 @@ impl FileWindow {
         self.top_line = if off == 0 { Some(0) } else { None };
         self.refill();
     }
+
+    /// Position the view so `offset` (a line start) is the top line.
+    fn seek_to(&mut self, offset: u64, line: Option<u64>) {
+        self.top_offset = offset.min(self.file_len);
+        self.top_line = line;
+        self.refill();
+    }
+
+    /// Find the next/previous line satisfying `matches`, starting from the line
+    /// after/before the current top, and reposition the view there. Returns
+    /// `true` if a match was found. Streams one line at a time (bounded memory).
+    pub fn search(&mut self, forward: bool, matches: impl Fn(&str) -> bool) -> bool {
+        if forward {
+            // Start just past the current top line.
+            let Ok((top, mut off, top_eof)) = read_forward(&mut self.file, self.top_offset, 1)
+            else {
+                return false;
+            };
+            if top.is_empty() || top_eof {
+                return false;
+            }
+            let mut line_no = self.top_line.map(|l| l + 1);
+            loop {
+                let Ok((ls, next, eof)) = read_forward(&mut self.file, off, 1) else {
+                    return false;
+                };
+                let Some(text) = ls.first() else { break };
+                if matches(text) {
+                    self.seek_to(off, line_no);
+                    return true;
+                }
+                if eof {
+                    break;
+                }
+                off = next;
+                line_no = line_no.map(|l| l + 1);
+            }
+            false
+        } else {
+            let mut off = self.top_offset;
+            let mut line_no = self.top_line;
+            while off > 0 {
+                let Ok(prev) = prev_line_start(&mut self.file, off) else {
+                    return false;
+                };
+                off = prev;
+                line_no = line_no.map(|l| l.saturating_sub(1));
+                if let Ok((ls, _, _)) = read_forward(&mut self.file, off, 1)
+                    && let Some(text) = ls.first()
+                    && matches(text)
+                {
+                    self.seek_to(off, line_no);
+                    return true;
+                }
+            }
+            false
+        }
+    }
+
+    /// Jump so 1-based line `target` is at the top, reading forward from the
+    /// supplied checkpoint `(offset, line)` (e.g. the nearest sparse-index
+    /// entry, or `(0, 1)` to scan from the start). Bounded memory.
+    pub fn goto_line(&mut self, target: u64, checkpoint: (u64, u64)) {
+        let (mut off, mut line) = checkpoint; // `off` is the start of line `line` (1-based)
+        let target = target.max(1);
+        while line < target {
+            let Ok((ls, next, eof)) = read_forward(&mut self.file, off, 1) else {
+                break;
+            };
+            if ls.is_empty() {
+                break; // past end of file
+            }
+            let prev = off;
+            off = next;
+            line += 1;
+            if eof {
+                // Just consumed the final line; clamp the view to it.
+                off = prev;
+                line -= 1;
+                break;
+            }
+        }
+        self.seek_to(off, Some(line.saturating_sub(1)));
+    }
 }
 
 /// Append `data` to the current line buffer, capping stored bytes at
@@ -188,7 +272,11 @@ fn decode_line(cur: &[u8], cur_total: usize) -> String {
 ///
 /// Lines are decoded lossily and capped at `MAX_LINE_BYTES`; the byte offset
 /// always reflects true on-disk lengths so navigation stays exact.
-fn read_forward(file: &mut File, start: u64, n: usize) -> io::Result<(Vec<String>, u64, bool)> {
+pub(super) fn read_forward(
+    file: &mut File,
+    start: u64,
+    n: usize,
+) -> io::Result<(Vec<String>, u64, bool)> {
     if n == 0 {
         return Ok((Vec::new(), start, false));
     }

@@ -1,5 +1,7 @@
+mod filter;
 mod highlight;
 mod index;
+mod search;
 mod window;
 
 use std::fs;
@@ -9,7 +11,9 @@ use std::path::{Path, PathBuf};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
-pub use index::LineCounter;
+pub use filter::{FilterMatch, LineFilter};
+pub use index::LineIndex;
+pub use search::{Search, SearchKind};
 use window::FileWindow;
 
 /// Progress of the background line-count for a large file.
@@ -51,6 +55,8 @@ pub struct PreviewState {
     pub path: Option<PathBuf>,
     pub is_binary: bool,
     kind: PreviewKind,
+    /// Active in-file search, used for match navigation and highlighting.
+    active_search: Option<Search>,
 }
 
 impl Default for PreviewState {
@@ -59,6 +65,7 @@ impl Default for PreviewState {
             path: None,
             is_binary: false,
             kind: PreviewKind::Empty,
+            active_search: None,
         }
     }
 }
@@ -76,6 +83,7 @@ impl PreviewState {
                 }],
                 scroll: 0,
             },
+            active_search: None,
         }
     }
 
@@ -83,6 +91,7 @@ impl PreviewState {
         self.path = None;
         self.is_binary = false;
         self.kind = PreviewKind::Empty;
+        self.active_search = None;
     }
 
     /// Render the visible window as ratatui lines, including a line-number
@@ -92,6 +101,14 @@ impl PreviewState {
             Some(n) => Span::styled(format!("{n:>6} "), Style::default().fg(Color::DarkGray)),
             None => Span::styled("       ".to_string(), Style::default().fg(Color::DarkGray)),
         };
+        // Build one line: gutter + content, applying search highlighting (only
+        // for on-screen lines, so it stays cheap).
+        let build = |num: Option<u64>, pieces: &[(String, Style)]| -> Line<'static> {
+            let mut spans = vec![gutter(num)];
+            spans.extend(self.highlight_pieces(pieces));
+            Line::from(spans)
+        };
+
         match &self.kind {
             PreviewKind::Empty => Vec::new(),
             PreviewKind::Loaded { lines, scroll } => lines
@@ -99,13 +116,7 @@ impl PreviewState {
                 .enumerate()
                 .skip(*scroll)
                 .take(height)
-                .map(|(i, pline)| {
-                    let mut spans = vec![gutter(Some(i as u64 + 1))];
-                    for (text, style) in &pline.spans {
-                        spans.push(Span::styled(text.clone(), *style));
-                    }
-                    Line::from(spans)
-                })
+                .map(|(i, pline)| build(Some(i as u64 + 1), &pline.spans))
                 .collect(),
             PreviewKind::Windowed { window, .. } => {
                 let base = window.top_line_1based();
@@ -115,12 +126,54 @@ impl PreviewState {
                     .take(height)
                     .enumerate()
                     .map(|(i, text)| {
-                        let num = base.map(|b| b + i as u64);
-                        Line::from(vec![gutter(num), Span::raw(text.clone())])
+                        let pieces = [(text.clone(), Style::default())];
+                        build(base.map(|b| b + i as u64), &pieces)
                     })
                     .collect()
             }
         }
+    }
+
+    /// Convert a line's styled pieces into spans, overlaying a highlight
+    /// background on any ranges matched by the active search.
+    fn highlight_pieces(&self, pieces: &[(String, Style)]) -> Vec<Span<'static>> {
+        let plain: String = pieces.iter().map(|(t, _)| t.as_str()).collect();
+        let ranges = match &self.active_search {
+            Some(s) => s.match_ranges(&plain),
+            None => Vec::new(),
+        };
+        if ranges.is_empty() {
+            return pieces
+                .iter()
+                .map(|(t, st)| Span::styled(t.clone(), *st))
+                .collect();
+        }
+
+        let hl = Style::default().bg(Color::Yellow).fg(Color::Black);
+        let in_match = |abs: usize| ranges.iter().any(|(s, e)| abs >= *s && abs < *e);
+
+        // Group consecutive chars sharing the same effective style into spans.
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        let mut cur = String::new();
+        let mut cur_style: Option<Style> = None;
+        let mut abs = 0usize;
+        for (text, base) in pieces {
+            for ch in text.chars() {
+                let style = if in_match(abs) { base.patch(hl) } else { *base };
+                if cur_style != Some(style) {
+                    if let Some(st) = cur_style {
+                        spans.push(Span::styled(std::mem::take(&mut cur), st));
+                    }
+                    cur_style = Some(style);
+                }
+                cur.push(ch);
+                abs += ch.len_utf8();
+            }
+        }
+        if let Some(st) = cur_style {
+            spans.push(Span::styled(cur, st));
+        }
+        spans
     }
 
     /// Whether this preview is a large, windowed file (worth a background
@@ -198,6 +251,73 @@ impl PreviewState {
             PreviewKind::Empty => {}
         }
     }
+
+    /// Jump so 1-based `line` is at the top of the view. For windowed files,
+    /// `checkpoint` is the nearest `(byte_offset, line_1based)` to read forward
+    /// from (from [`LineIndex::checkpoint_for`]); pass `(0, 1)` to scan from the
+    /// start.
+    pub fn goto_line(&mut self, line: usize, checkpoint: (u64, u64)) {
+        match &mut self.kind {
+            PreviewKind::Loaded { lines, scroll } => {
+                *scroll = line.saturating_sub(1).min(lines.len().saturating_sub(1));
+            }
+            PreviewKind::Windowed { window, .. } => window.goto_line(line as u64, checkpoint),
+            PreviewKind::Empty => {}
+        }
+    }
+
+    /// Set (or clear, when `query` is empty) the active in-file search.
+    /// Returns `Err(message)` for an invalid regex.
+    pub fn set_search(&mut self, query: &str, kind: SearchKind) -> Result<(), String> {
+        self.active_search = if query.is_empty() {
+            None
+        } else {
+            Some(Search::new(query, kind)?)
+        };
+        Ok(())
+    }
+
+    pub fn clear_search(&mut self) {
+        self.active_search = None;
+    }
+
+    pub fn active_search(&self) -> Option<&Search> {
+        self.active_search.as_ref()
+    }
+
+    /// Move to the next (`forward`) or previous matching line for the active
+    /// search, wrapping at the ends. Returns `true` if a match was found.
+    pub fn search_next(&mut self, forward: bool) -> bool {
+        let Some(search) = self.active_search.clone() else {
+            return false;
+        };
+        match &mut self.kind {
+            PreviewKind::Loaded { lines, scroll } => {
+                let n = lines.len();
+                if n == 0 {
+                    return false;
+                }
+                let mut i = *scroll;
+                for _ in 0..n {
+                    i = if forward { (i + 1) % n } else { (i + n - 1) % n };
+                    if search.line_matches(&line_text(&lines[i])) {
+                        *scroll = i;
+                        return true;
+                    }
+                }
+                false
+            }
+            PreviewKind::Windowed { window, .. } => {
+                window.search(forward, |line| search.line_matches(line))
+            }
+            PreviewKind::Empty => false,
+        }
+    }
+}
+
+/// Plain text of a styled preview line (concatenated span text).
+fn line_text(pline: &PreviewLine) -> String {
+    pline.spans.iter().map(|(t, _)| t.as_str()).collect()
 }
 
 /// Detect if a file is likely binary by checking for null bytes and the ratio
@@ -253,6 +373,7 @@ fn load_preview_with_threshold(path: &Path, threshold: u64) -> PreviewState {
                 lines: highlight::highlight(&content, path),
                 scroll: 0,
             },
+            active_search: None,
         };
     }
 
@@ -265,6 +386,7 @@ fn load_preview_with_threshold(path: &Path, threshold: u64) -> PreviewState {
                 window,
                 count: CountState::Unknown,
             },
+            active_search: None,
         },
         Err(_) => PreviewState::message(Some(path.to_path_buf()), "Cannot read file", Color::Red),
     }
@@ -345,5 +467,152 @@ mod tests {
     fn test_missing_file_message() {
         let state = load_preview(Path::new("/nonexistent/ncoxide/file"));
         assert!(!state.render(1).is_empty());
+    }
+
+    /// Plain text of each rendered line (gutter included).
+    fn rendered(state: &PreviewState, h: usize) -> Vec<String> {
+        state
+            .render(h)
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn test_search_next_loaded() {
+        let dir = tmp("search_loaded");
+        let path = dir.join("f.txt");
+        fs::write(&path, "alpha\nbeta\nfind me\ngamma\nfind again\n").unwrap();
+        let mut state = load_preview(&path);
+        state.set_search("find", SearchKind::Literal).unwrap();
+
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("find me"));
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("find again"));
+        // Wraps back to the first match.
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("find me"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_search_next_windowed() {
+        let dir = tmp("search_win");
+        let path = dir.join("big.log");
+        let mut body = String::new();
+        for i in 0..200 {
+            if i == 150 {
+                body.push_str("the NEEDLE is here\n");
+            } else {
+                body.push_str(&format!("noise line {i}\n"));
+            }
+        }
+        fs::write(&path, &body).unwrap();
+        let mut state = load_preview_with_threshold(&path, 16); // force windowed
+        state.set_search("needle", SearchKind::Literal).unwrap(); // smart-case insensitive
+
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("NEEDLE"));
+        assert_eq!(state.status_text().split(' ').nth(1), Some("151")); // 1-based line
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Large-file proof: search, goto, and fuzzy-filter over a ~128 MB file
+    /// must stay bounded in memory (only windows/top-N are ever resident).
+    /// Run with `cargo test --release -- --ignored large_file_search`.
+    #[test]
+    #[ignore]
+    fn test_large_file_search_goto_filter() {
+        use std::io::Write;
+        let path = std::env::temp_dir().join(format!("ncoxide_bigsearch_{}", std::process::id()));
+        let needle_line; // 1-based line number where the needle lives
+        {
+            let f = fs::File::create(&path).unwrap();
+            let mut w = std::io::BufWriter::new(f);
+            let mut line = 0u64;
+            let mut written = 0u64;
+            let mut needle_at = 0u64;
+            while written < 128 * 1024 * 1024 {
+                line += 1;
+                let s = if written >= 100 * 1024 * 1024 && needle_at == 0 {
+                    needle_at = line;
+                    "UNIQUE_NEEDLE_XYZ marker line\n".to_string()
+                } else {
+                    format!("log entry number {line} with some filler text\n")
+                };
+                written += s.len() as u64;
+                w.write_all(s.as_bytes()).unwrap();
+            }
+            needle_line = needle_at;
+        }
+
+        let mut state = load_preview_with_threshold(&path, 16); // windowed
+        assert!(state.is_large());
+
+        // Search finds the needle far into the file.
+        state.set_search("UNIQUE_NEEDLE_XYZ", SearchKind::Literal).unwrap();
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("UNIQUE_NEEDLE_XYZ"));
+
+        // Goto lands on an arbitrary line.
+        state.goto_line(needle_line as usize, (0, 1));
+        assert!(rendered(&state, 1)[0].contains("UNIQUE_NEEDLE_XYZ"));
+
+        // Fuzzy filter finds it via a background scan (a full 128 MB pass takes
+        // a few seconds, so wait on completion with a generous timeout).
+        let filter = LineFilter::spawn(path.clone(), "uniqueneedle".to_string(), 200);
+        for _ in 0..6000 {
+            if filter.is_done() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(filter.is_done(), "filter scan did not finish in time");
+        assert!(filter.results().iter().any(|m| m.text.contains("UNIQUE_NEEDLE_XYZ")));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn test_search_highlights_matched_span() {
+        let dir = tmp("highlight");
+        let path = dir.join("f.txt");
+        fs::write(&path, "hello world\n").unwrap();
+        let mut state = load_preview(&path);
+        state.set_search("world", SearchKind::Literal).unwrap();
+
+        let lines = state.render(1);
+        let hl: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(Color::Yellow))
+            .map(|s| s.content.to_string())
+            .collect();
+        assert_eq!(hl, "world", "only the match should be highlighted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_goto_line_windowed_and_loaded() {
+        let dir = tmp("goto");
+        let body: String = (0..300).map(|i| format!("line{i}\n")).collect();
+
+        let small = dir.join("small.txt");
+        fs::write(&small, &body).unwrap();
+        let mut state = load_preview(&small);
+        state.goto_line(100, (0, 1));
+        assert!(rendered(&state, 1)[0].contains("line99")); // 1-based 100 -> "line99"
+
+        let big = dir.join("big.txt");
+        fs::write(&big, &body).unwrap();
+        let mut state = load_preview_with_threshold(&big, 16);
+        state.goto_line(100, (0, 1));
+        assert!(rendered(&state, 1)[0].contains("line99"));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

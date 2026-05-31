@@ -455,6 +455,11 @@ impl App {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
                     && !entry.is_dir {
                         let _ = crate::viewer::view_file(&entry.path);
+                        // The viewer restores the terminal to its own exit state
+                        // (raw mode off, primary screen); re-establish the app's
+                        // alternate-screen raw-mode TUI before continuing.
+                        let _ = enable_raw_mode();
+                        let _ = execute!(io::stdout(), EnterAlternateScreen);
                     }
             }
         }

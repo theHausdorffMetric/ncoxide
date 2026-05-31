@@ -13,7 +13,12 @@ A modal dual-pane file commander for the terminal, inspired by
 - **Modal keybindings** -- Normal, Select, Space menu, Goto, Command, Input, and
   Finder modes (similar to Helix/Vim)
 - **Fuzzy finder** -- powered by nucleo-matcher (the same engine Helix uses)
-- **Syntax-highlighted preview** -- inline file preview with syntect
+- **Syntax-highlighted preview** -- inline file preview with syntect for source
+  files; large files and logs stream through a windowed reader with bounded
+  memory (scrolls multi-GB files without loading them)
+- **File viewer** -- full-screen pager (Space then `v`) with in-file search
+  (`/`, literal or `Ctrl-R` regex, `n`/`N` to cycle matches), goto-line
+  (`<N>G`), and fuzzy line-filter (`&`, powered by nucleo-matcher)
 - **Visual selection** -- select individual files, ranges, or by glob pattern
   (`*.rs`)
 - **File operations** -- copy, move, delete, rename, mkdir with confirmation

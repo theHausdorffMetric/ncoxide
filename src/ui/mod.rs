@@ -90,6 +90,7 @@ fn space_menu_overlay(f: &mut Frame) {
         ("r", "Rename"),
         ("n", "New directory"),
         ("e", "Edit with $EDITOR"),
+        ("v", "View file (pager)"),
         ("f", "Fuzzy find file"),
         ("s", "Sort menu"),
         ("i", "File info"),
