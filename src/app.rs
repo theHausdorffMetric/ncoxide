@@ -43,6 +43,18 @@ pub struct App {
     pub config: Config,
     finder: Finder,
     page_size: usize,
+    /// A request to hand the terminal to an external program (pager or editor).
+    /// Run by the event loop, which owns the `Terminal` and can restore/redraw
+    /// the app afterward.
+    pending_external: Option<PendingExternal>,
+}
+
+/// A full-screen takeover the event loop should run between frames.
+enum PendingExternal {
+    /// Open the built-in pager on this path.
+    View(PathBuf),
+    /// Launch `$EDITOR` on this path.
+    Edit(PathBuf),
 }
 
 impl App {
@@ -77,6 +89,7 @@ impl App {
             config,
             finder: Finder::new(),
             page_size: 20,
+            pending_external: None,
         }
     }
 
@@ -179,7 +192,43 @@ impl App {
                 && key.kind == crossterm::event::KeyEventKind::Press {
                     self.handle_key(key);
                 }
+
+            // Hand the terminal to an external program (pager/editor) if
+            // requested, then re-establish the app's TUI and force a full
+            // repaint — ratatui's buffer is otherwise out of sync with the
+            // now-blank screen, leaving stale borders/rows.
+            if let Some(pending) = self.pending_external.take() {
+                self.run_external(terminal, pending)?;
+            }
         }
+    }
+
+    /// Suspend the TUI, run an external full-screen program, then restore the
+    /// alternate-screen raw-mode UI and repaint from scratch.
+    fn run_external(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+        pending: PendingExternal,
+    ) -> Result<()> {
+        match pending {
+            // The pager manages its own raw mode / alternate screen.
+            PendingExternal::View(path) => {
+                let _ = crate::viewer::view_file(&path);
+            }
+            // The editor needs cooked mode on the primary screen.
+            PendingExternal::Edit(path) => {
+                disable_raw_mode().ok();
+                execute!(io::stdout(), LeaveAlternateScreen).ok();
+                let _ = Command::new(self.editor_command()).arg(&path).status();
+            }
+        }
+
+        enable_raw_mode().map_err(crate::error::NcError::Io)?;
+        execute!(io::stdout(), EnterAlternateScreen).map_err(crate::error::NcError::Io)?;
+        terminal.clear().map_err(crate::error::NcError::Io)?;
+        // The file may have changed (editor) and the listing should be current.
+        self.refresh_pane(self.active_pane);
+        Ok(())
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -454,12 +503,9 @@ impl App {
             Action::ViewFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
                     && !entry.is_dir {
-                        let _ = crate::viewer::view_file(&entry.path);
-                        // The viewer restores the terminal to its own exit state
-                        // (raw mode off, primary screen); re-establish the app's
-                        // alternate-screen raw-mode TUI before continuing.
-                        let _ = enable_raw_mode();
-                        let _ = execute!(io::stdout(), EnterAlternateScreen);
+                        // Defer to the event loop, which owns the Terminal and
+                        // can fully restore/redraw the app after the viewer exits.
+                        self.pending_external = Some(PendingExternal::View(entry.path));
                     }
             }
         }
@@ -726,34 +772,16 @@ impl App {
     }
 
     fn edit_file(&mut self) {
-        if let Some(entry) = self.active_pane_state().current_entry().cloned() {
-            if entry.is_dir {
-                return;
-            }
-            let editor = self.editor_command();
-            // Temporarily exit raw mode for the editor
-            disable_raw_mode().ok();
-            execute!(io::stdout(), LeaveAlternateScreen).ok();
-
-            let _ = Command::new(&editor).arg(&entry.path).status();
-
-            execute!(io::stdout(), EnterAlternateScreen).ok();
-            enable_raw_mode().ok();
-            self.refresh_pane(self.active_pane);
+        if let Some(entry) = self.active_pane_state().current_entry().cloned()
+            && !entry.is_dir
+        {
+            // Defer to the event loop (it owns the Terminal to restore/redraw).
+            self.pending_external = Some(PendingExternal::Edit(entry.path));
         }
     }
 
-    fn open_file(&mut self, path: &PathBuf) {
-        // For now, open with the configured editor / $EDITOR
-        let editor = self.editor_command();
-        disable_raw_mode().ok();
-        execute!(io::stdout(), LeaveAlternateScreen).ok();
-
-        let _ = Command::new(&editor).arg(path).status();
-
-        execute!(io::stdout(), EnterAlternateScreen).ok();
-        enable_raw_mode().ok();
-        self.refresh_pane(self.active_pane);
+    fn open_file(&mut self, path: &Path) {
+        self.pending_external = Some(PendingExternal::Edit(path.to_path_buf()));
     }
 
     fn show_file_info(&mut self) {
