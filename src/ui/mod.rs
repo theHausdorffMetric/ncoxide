@@ -137,8 +137,10 @@ fn finder_overlay(f: &mut Frame, app: &App) {
     use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
     let area = f.area();
-    let width = (area.width * 3 / 4).max(40).min(area.width);
-    let height = 22u16.min(area.height - 2);
+    // Saturating ops: `* 3` can overflow u16 and `- 2` underflows on tiny
+    // terminals; max-then-min (not clamp) keeps width ≤ area even when < 40.
+    let width = (area.width.saturating_mul(3) / 4).max(40).min(area.width);
+    let height = 22u16.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect::new(x, y, width, height);
@@ -166,7 +168,7 @@ fn finder_overlay(f: &mut Frame, app: &App) {
         .finder_results
         .iter()
         .enumerate()
-        .take(height as usize - 4)
+        .take((height as usize).saturating_sub(4))
     {
         let is_cursor = i == app.finder_cursor;
         let style = if is_cursor {

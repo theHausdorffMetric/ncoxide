@@ -6,8 +6,9 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 
 pub fn draw_help(f: &mut Frame) {
     let area = f.area();
-    let width = 60u16.min(area.width - 4);
-    let height = (area.height - 4).min(30);
+    // saturating_sub: raw subtraction underflows (panics) on tiny terminals.
+    let width = 60u16.min(area.width.saturating_sub(4));
+    let height = area.height.saturating_sub(4).min(30);
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
     let rect = Rect::new(x, y, width, height);

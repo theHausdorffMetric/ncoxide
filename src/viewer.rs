@@ -262,7 +262,9 @@ fn draw_filter_overlay(
     cursor: usize,
 ) {
     let area = f.area();
-    let width = (area.width * 3 / 4).clamp(40, area.width);
+    // max-then-min, not clamp(40, w): clamp panics when the terminal is
+    // narrower than 40; saturating_mul avoids u16 overflow on huge widths.
+    let width = (area.width.saturating_mul(3) / 4).max(40).min(area.width);
     let height = 20u16.min(area.height.saturating_sub(2));
     let x = area.x + (area.width.saturating_sub(width)) / 2;
     let y = area.y + (area.height.saturating_sub(height)) / 2;
@@ -385,5 +387,17 @@ mod tests {
         // load_preview handles missing files with a message line.
         let state = preview::load_preview(Path::new("/nonexistent/file"));
         assert!(!state.render(1).is_empty());
+    }
+
+    #[test]
+    fn test_filter_overlay_panic_free_at_tiny_sizes() {
+        // The old width computation used clamp(40, area.width), which panics
+        // for terminals narrower than 40 columns (R3).
+        for (w, h) in [(1u16, 1u16), (10, 3), (39, 4), (80, 24)] {
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| draw_filter_overlay(f, "query", &[], 0))
+                .unwrap();
+        }
     }
 }

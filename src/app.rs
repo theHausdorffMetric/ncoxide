@@ -154,6 +154,17 @@ impl App {
 
     /// Main event loop.
     pub fn run(&mut self) -> Result<()> {
+        // Restore the terminal before the default panic report: the cleanup
+        // below only runs on ordinary returns, so without this a panic
+        // mid-draw leaves the shell in raw mode on the alternate screen.
+        // Also covers the pager, which manages the same terminal state.
+        let default_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            default_hook(info);
+        }));
+
         enable_raw_mode().map_err(crate::error::NcError::Io)?;
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen).map_err(crate::error::NcError::Io)?;
@@ -1238,6 +1249,35 @@ mod integration {
         let _ = render(&app, 1, 1);
         let _ = render(&app, 20, 3);
         let _ = render(&app, 200, 60);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_overlays_render_panic_free_at_tiny_sizes() {
+        // Overlay geometry used raw u16 subtraction and could underflow on
+        // terminals smaller than the overlay margins (R3). Exercise every
+        // overlay at pathological sizes.
+        let (dir, mut app) = app_with("tiny_overlays", &["a.txt"]);
+        for (w, h) in [(1u16, 1u16), (3, 2), (6, 3), (20, 3), (39, 5), (80, 24)] {
+            app.show_help = true;
+            let _ = render(&app, w, h);
+            app.show_help = false;
+
+            app.dialog = Some(Dialog::Error {
+                message: "boom".into(),
+            });
+            let _ = render(&app, w, h);
+            app.dialog = None;
+
+            app.mode = Mode::Space;
+            let _ = render(&app, w, h);
+
+            app.mode = Mode::Finder;
+            app.input_buffer = "q".into();
+            let _ = render(&app, w, h);
+            app.mode = Mode::Normal;
+            app.input_buffer.clear();
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 }
