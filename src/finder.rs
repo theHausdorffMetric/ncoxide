@@ -45,8 +45,10 @@ impl Finder {
             .max_depth(8)
             .into_iter()
             .filter_entry(|e| {
-                // Skip hidden directories
-                !e.file_name().to_str().is_some_and(|s| s.starts_with('.'))
+                // Skip hidden entries — but never the walk root itself
+                // (depth 0), or a finder opened *inside* a hidden directory
+                // (e.g. ~/.config) would yield no results at all.
+                e.depth() == 0 || !e.file_name().to_str().is_some_and(|s| s.starts_with('.'))
             })
             .flatten()
         {
@@ -97,6 +99,29 @@ mod tests {
 
         let results = finder.find(&tmp, "rs", 10);
         assert!(results.len() >= 2);
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_finder_works_inside_hidden_root() {
+        // filter_entry also applies to the walk root; without the depth-0
+        // guard a finder opened in a dot-directory finds nothing (R2).
+        let tmp =
+            std::env::temp_dir().join(format!(".ncoxide_finder_hidden_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(tmp.join("sub")).unwrap();
+        fs::write(tmp.join("main.rs"), "").unwrap();
+        fs::write(tmp.join("sub/other.rs"), "").unwrap();
+        // Hidden entries *inside* the root stay excluded.
+        fs::write(tmp.join(".secret.rs"), "").unwrap();
+
+        let mut finder = Finder::new();
+        let results = finder.find(&tmp, "rs", 10);
+        let names: Vec<&str> = results.iter().map(|m| m.display_name.as_str()).collect();
+        assert!(names.contains(&"main.rs"), "results: {names:?}");
+        assert!(names.contains(&"sub/other.rs"), "results: {names:?}");
+        assert!(!names.contains(&".secret.rs"), "results: {names:?}");
 
         let _ = fs::remove_dir_all(&tmp);
     }
