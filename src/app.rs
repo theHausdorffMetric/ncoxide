@@ -1052,6 +1052,32 @@ mod integration {
     }
 
     #[test]
+    fn test_copy_to_same_dir_refused_and_file_intact() {
+        // Both panes share a cwd (the app's default startup state). `y` must
+        // not destroy the file: overwrite prompt -> confirm -> guarded error,
+        // content untouched (R1).
+        let (dir, mut app) = app_with("selfcopy", &["data.txt"]);
+        fs::write(dir.join("data.txt"), b"important").unwrap();
+
+        app.handle_key(key('y'));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Confirm { .. })),
+            "same-name copy should raise the overwrite confirm"
+        );
+        app.handle_key(key('y'));
+        assert!(
+            matches!(app.dialog, Some(Dialog::Error { .. })),
+            "confirmed self-copy must surface an error, not run"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("data.txt")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_navigation_moves_cursor_and_renders() {
         let (dir, mut app) = app_with("nav", &["a.txt", "b.txt", "c.txt"]);
         assert_eq!(app.left_pane.cursor, 0);

@@ -3,9 +3,49 @@ use std::path::{Path, PathBuf};
 
 use crate::error::{NcError, Result};
 
+/// Refuse a transfer whose destination entry is the source itself or lies
+/// inside a source directory (`cp`/`mv`-style guard). Both are destructive:
+/// `fs::copy` onto the same path truncates the file to zero bytes before
+/// reading, and copying a directory into its own subtree recurses into the
+/// tree it is creating.
+fn ensure_safe_transfer(source: &Path, target_dir: &Path) -> Result<()> {
+    let name = source
+        .file_name()
+        .ok_or_else(|| NcError::FileOperation("Invalid source path".into()))?;
+    // Canonicalize the source's *parent* and re-attach the final component,
+    // so a symlink source compares as the link entry itself, not its target.
+    let src_parent = match source.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    let src = fs::canonicalize(src_parent)
+        .map_err(NcError::Io)?
+        .join(name);
+    let dest = fs::canonicalize(target_dir)
+        .map_err(NcError::Io)?
+        .join(name);
+
+    if dest == src {
+        return Err(NcError::FileOperation(format!(
+            "source and destination are the same: {}",
+            src.display()
+        )));
+    }
+    if dest.starts_with(&src) {
+        return Err(NcError::FileOperation(format!(
+            "cannot transfer '{}' into itself ('{}')",
+            source.display(),
+            dest.display()
+        )));
+    }
+    Ok(())
+}
+
 /// Copy a file or directory to a target directory.
 /// Symlinks are preserved as symlinks rather than followed.
+/// Refuses self- and nested-destination transfers (see [`ensure_safe_transfer`]).
 pub fn copy_to(source: &Path, target_dir: &Path) -> Result<()> {
+    ensure_safe_transfer(source, target_dir)?;
     let name = source
         .file_name()
         .ok_or_else(|| NcError::FileOperation("Invalid source path".into()))?;
@@ -71,7 +111,9 @@ pub fn path_size(path: &Path) -> Result<u64> {
 }
 
 /// Move a file or directory to a target directory.
+/// Refuses self- and nested-destination transfers (see [`ensure_safe_transfer`]).
 pub fn move_to(source: &Path, target_dir: &Path) -> Result<()> {
+    ensure_safe_transfer(source, target_dir)?;
     let name = source
         .file_name()
         .ok_or_else(|| NcError::FileOperation("Invalid source path".into()))?;
@@ -232,6 +274,106 @@ mod tests {
         // (create_dir, not create_dir_all) so collision handling is preserved.
         mkdir(&tmp, "dup").unwrap();
         assert!(mkdir(&tmp, "dup").is_err());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    /// Unique per-process temp dir for the transfer-guard tests (R1).
+    fn guard_dir(name: &str) -> std::path::PathBuf {
+        let tmp = std::env::temp_dir().join(format!("ncoxide_guard_{name}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        tmp
+    }
+
+    #[test]
+    fn test_copy_file_onto_itself_refused() {
+        // fs::copy(src, src) truncates the file to zero bytes — must refuse.
+        let tmp = guard_dir("self_file");
+        fs::write(tmp.join("data.txt"), "important").unwrap();
+
+        assert!(copy_to(&tmp.join("data.txt"), &tmp).is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.join("data.txt")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_copy_dir_onto_itself_refused() {
+        let tmp = guard_dir("self_dir");
+        let sub = tmp.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("f.txt"), "keep").unwrap();
+
+        assert!(copy_to(&sub, &tmp).is_err());
+        assert_eq!(fs::read_to_string(sub.join("f.txt")).unwrap(), "keep");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_copy_dir_into_own_subdir_refused() {
+        // Copying /x into /x/inner would recurse into the tree being created.
+        let tmp = guard_dir("nested");
+        let src = tmp.join("src_dir");
+        let inner = src.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+
+        assert!(copy_to(&src, &inner).is_err());
+        assert!(!inner.join("src_dir").exists());
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_copy_into_symlinked_same_dir_refused() {
+        // The target dir is a symlink resolving to the source's own directory;
+        // the guard must see through it.
+        let tmp = guard_dir("symlink_target");
+        fs::write(tmp.join("data.txt"), "important").unwrap();
+        let alias =
+            std::env::temp_dir().join(format!("ncoxide_guard_alias_{}", std::process::id()));
+        let _ = fs::remove_file(&alias);
+        std::os::unix::fs::symlink(&tmp, &alias).unwrap();
+
+        assert!(copy_to(&tmp.join("data.txt"), &alias).is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.join("data.txt")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_file(&alias);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_move_file_onto_itself_refused() {
+        let tmp = guard_dir("move_self");
+        fs::write(tmp.join("data.txt"), "important").unwrap();
+
+        assert!(move_to(&tmp.join("data.txt"), &tmp).is_err());
+        assert_eq!(
+            fs::read_to_string(tmp.join("data.txt")).unwrap(),
+            "important"
+        );
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_move_dir_into_own_subdir_refused() {
+        let tmp = guard_dir("move_nested");
+        let src = tmp.join("src_dir");
+        let inner = src.join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(src.join("f.txt"), "keep").unwrap();
+
+        assert!(move_to(&src, &inner).is_err());
+        assert!(src.is_dir());
+        assert_eq!(fs::read_to_string(src.join("f.txt")).unwrap(), "keep");
 
         let _ = fs::remove_dir_all(&tmp);
     }
