@@ -676,10 +676,9 @@ impl App {
     }
 
     fn execute_move(&mut self, paths: &[PathBuf], target: &Path) {
-        if let Some(msg) = self.check_disk_space(paths, target) {
-            self.dialog = Some(Dialog::Error { message: msg });
-            return;
-        }
+        // No space pre-check here: a same-filesystem move is a rename and
+        // needs no free space. The cross-device copy+delete fallback checks
+        // space inside `move_to` before copying anything.
         self.run_batch(paths, |path| operations::move_to(path, target));
     }
 
@@ -740,7 +739,9 @@ impl App {
         }
     }
 
-    /// Check if there's enough disk space for the operation.
+    /// Check if there's enough disk space for a copy (moves rename in place
+    /// and only need space in the cross-device fallback, checked in
+    /// `operations::move_to`).
     /// Returns Some(error message) if space is insufficient, None if OK or undetermined.
     fn check_disk_space(&self, sources: &[PathBuf], target: &Path) -> Option<String> {
         let free = platform::get_free_disk_space(target)?;
@@ -1084,6 +1085,36 @@ mod integration {
             fs::read_to_string(dir.join("data.txt")).unwrap(),
             "important"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_move_via_space_menu_between_panes() {
+        // Same-filesystem move driven through the real key path (Space, m).
+        // Must succeed without any disk-space pre-check getting in the way
+        // (R5: moves rename in place and need no free space).
+        let (dir, mut app) = app_with("move_sfs", &["moveme.txt"]);
+        let dst = dir.join("dst");
+        fs::create_dir_all(&dst).unwrap();
+        let _ = app.left_pane.refresh();
+        app.right_pane.goto(dst.clone());
+
+        // Cursor onto the file ("dst" dir sorts first).
+        let idx = app
+            .left_pane
+            .entries
+            .iter()
+            .position(|e| e.name == "moveme.txt")
+            .unwrap();
+        app.left_pane.cursor = idx;
+
+        app.handle_key(key(' '));
+        app.handle_key(key('m'));
+
+        assert!(app.dialog.is_none(), "move should not raise a dialog");
+        assert!(!dir.join("moveme.txt").exists());
+        assert!(dst.join("moveme.txt").exists());
 
         let _ = fs::remove_dir_all(&dir);
     }

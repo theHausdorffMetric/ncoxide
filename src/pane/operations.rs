@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::error::{NcError, Result};
+use crate::platform;
 
 /// Refuse a transfer whose destination entry is the source itself or lies
 /// inside a source directory (`cp`/`mv`-style guard). Both are destructive:
@@ -123,6 +124,10 @@ pub fn move_to(source: &Path, target_dir: &Path) -> Result<()> {
     match fs::rename(source, &dest) {
         Ok(()) => Ok(()),
         Err(_) => {
+            // Unlike the rename above, copy+delete needs free space at the
+            // destination — fail before copying anything partial. Fail-open
+            // when free space or source size can't be determined.
+            check_fallback_space(source, target_dir)?;
             copy_to(source, target_dir)?;
             if let Err(e) = delete(source) {
                 return Err(NcError::FileOperation(format!(
@@ -133,6 +138,33 @@ pub fn move_to(source: &Path, target_dir: &Path) -> Result<()> {
             Ok(())
         }
     }
+}
+
+/// Space check for `move_to`'s copy+delete fallback. Errors only when both
+/// the destination's free space and the source size are known and the source
+/// doesn't fit (see [`space_shortfall`]).
+fn check_fallback_space(source: &Path, target_dir: &Path) -> Result<()> {
+    let Some(free) = platform::get_free_disk_space(target_dir) else {
+        return Ok(());
+    };
+    let Ok(needed) = path_size(source) else {
+        return Ok(());
+    };
+    match space_shortfall(needed, free) {
+        Some(msg) => Err(NcError::FileOperation(msg)),
+        None => Ok(()),
+    }
+}
+
+/// `Some(message)` when `needed` bytes don't fit into `free` bytes.
+fn space_shortfall(needed: u64, free: u64) -> Option<String> {
+    (needed > free).then(|| {
+        format!(
+            "not enough disk space: need {} but only {} available",
+            platform::format_file_size(needed),
+            platform::format_file_size(free),
+        )
+    })
 }
 
 /// Delete a file or directory (recursive for directories).
@@ -276,6 +308,15 @@ mod tests {
         assert!(mkdir(&tmp, "dup").is_err());
 
         let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_space_shortfall_comparison() {
+        // Locks the comparison direction for the fallback space check (R5):
+        // only a genuine shortfall errors; exact fit passes.
+        assert!(space_shortfall(10, 5).is_some());
+        assert!(space_shortfall(5, 10).is_none());
+        assert!(space_shortfall(5, 5).is_none());
     }
 
     /// Unique per-process temp dir for the transfer-guard tests (R1).
