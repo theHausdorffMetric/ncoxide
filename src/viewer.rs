@@ -158,7 +158,7 @@ pub fn view_file(path: &Path) -> crate::error::Result<()> {
                 KeyCode::Char('r') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     *kind = kind.toggled();
                 }
-                KeyCode::Char(c) => buf.push(c),
+                KeyCode::Char(c) if crate::mode::accepts_text(&key) => buf.push(c),
                 _ => {}
             },
             Mode::Filter {
@@ -185,7 +185,7 @@ pub fn view_file(path: &Path) -> crate::error::Result<()> {
                     buf.pop();
                     respawn_filter(buf, filter, results, cursor, path);
                 }
-                KeyCode::Char(c) => {
+                KeyCode::Char(c) if crate::mode::accepts_text(&key) => {
                     buf.push(c);
                     respawn_filter(buf, filter, results, cursor, path);
                 }

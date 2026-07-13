@@ -5,6 +5,15 @@ pub mod normal;
 pub mod select;
 pub mod space;
 
+use crossterm::event::{KeyEvent, KeyModifiers};
+
+/// True when a `KeyCode::Char` event is plain typed text: no modifiers beyond
+/// SHIFT (which legitimately produces uppercase/symbols). Without this guard,
+/// chords like Ctrl-C insert their letter into text inputs.
+pub fn accepts_text(key: &KeyEvent) -> bool {
+    key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
+}
+
 /// Application mode — determines how keystrokes are interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

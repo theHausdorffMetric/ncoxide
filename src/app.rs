@@ -231,7 +231,9 @@ impl App {
             PendingExternal::Edit(path) => {
                 disable_raw_mode().ok();
                 execute!(io::stdout(), LeaveAlternateScreen).ok();
-                let _ = Command::new(self.editor_command()).arg(&path).status();
+                if let Some((program, args)) = self.editor_invocation() {
+                    let _ = Command::new(program).args(args).arg(&path).status();
+                }
             }
         }
 
@@ -777,14 +779,21 @@ impl App {
         }
     }
 
-    /// Editor command: the configured `[general] editor` if set, otherwise
-    /// `$EDITOR` (falling back to `vi`).
-    fn editor_command(&self) -> String {
-        self.config
+    /// Editor invocation: the configured `[general] editor` if set, otherwise
+    /// `$EDITOR` (falling back to `vi`). Split on whitespace into program +
+    /// args so values like `code -w` or `emacsclient -t` work; quoting is not
+    /// supported (the common convention — same as less, crontab, etc.).
+    /// `None` for a blank editor value.
+    fn editor_invocation(&self) -> Option<(String, Vec<String>)> {
+        let raw = self
+            .config
             .general
             .editor
             .clone()
-            .unwrap_or_else(platform::get_default_editor)
+            .unwrap_or_else(platform::get_default_editor);
+        let mut parts = raw.split_whitespace().map(str::to_string);
+        let program = parts.next()?;
+        Some((program, parts.collect()))
     }
 
     fn edit_file(&mut self) {
@@ -884,7 +893,7 @@ impl App {
                 self.update_finder_results();
                 Action::None
             }
-            crossterm::event::KeyCode::Char(c) => {
+            crossterm::event::KeyCode::Char(c) if crate::mode::accepts_text(&key) => {
                 self.input_buffer.push(c);
                 self.update_finder_results();
                 Action::None
@@ -974,6 +983,35 @@ mod tests {
         assert_eq!(app.left_pane.sort_by, SortBy::Size);
         assert_eq!(app.left_pane.sort_dir, SortDirection::Descending);
         assert!(app.left_pane.entries.iter().any(|e| e.name == ".hidden"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_editor_invocation_splits_program_and_args() {
+        let dir = temp_dir("editor");
+
+        let mut config = Config::default();
+        config.general.editor = Some("code -w --reuse-window".into());
+        let app = App::new_with_config(dir.clone(), dir.clone(), config);
+        assert_eq!(
+            app.editor_invocation(),
+            Some((
+                "code".to_string(),
+                vec!["-w".to_string(), "--reuse-window".to_string()]
+            ))
+        );
+
+        let mut config = Config::default();
+        config.general.editor = Some("vi".into());
+        let app = App::new_with_config(dir.clone(), dir.clone(), config);
+        assert_eq!(app.editor_invocation(), Some(("vi".to_string(), vec![])));
+
+        // Blank editor value: nothing to run.
+        let mut config = Config::default();
+        config.general.editor = Some("   ".into());
+        let app = App::new_with_config(dir.clone(), dir.clone(), config);
+        assert_eq!(app.editor_invocation(), None);
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1085,6 +1123,31 @@ mod integration {
             fs::read_to_string(dir.join("data.txt")).unwrap(),
             "important"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_ctrl_chords_do_not_type_into_inputs() {
+        // Ctrl-C during a rename used to insert a literal 'c' (R9).
+        let (dir, mut app) = app_with("ctrl_input", &["file.txt"]);
+        app.handle_key(key('r')); // rename input, pre-filled with the name
+        assert_eq!(app.input_buffer, "file.txt");
+
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.input_buffer, "file.txt", "Ctrl-C must not type");
+        app.handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT));
+        assert_eq!(app.input_buffer, "file.txt", "Alt-x must not type");
+
+        app.handle_key(key('2'));
+        assert_eq!(app.input_buffer, "file.txt2", "plain chars still type");
+
+        // Finder input takes the same guard.
+        app.handle_key(code(KeyCode::Esc));
+        app.mode = Mode::Finder;
+        app.input_buffer.clear();
+        app.handle_key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL));
+        assert_eq!(app.input_buffer, "", "Ctrl-C must not type in finder");
 
         let _ = fs::remove_dir_all(&dir);
     }

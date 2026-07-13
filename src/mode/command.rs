@@ -7,7 +7,7 @@ pub fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Esc => Action::ExitToNormal,
         KeyCode::Enter => Action::InputConfirm,
         KeyCode::Backspace => Action::InputBackspace,
-        KeyCode::Char(c) => Action::InputChar(c),
+        KeyCode::Char(c) if super::accepts_text(&key) => Action::InputChar(c),
         _ => Action::None,
     }
 }
