@@ -68,7 +68,11 @@ impl FileEntry {
                 Err(_) => (false, link_meta.len(), link_meta.modified().ok()),
             }
         } else {
-            (link_meta.is_dir(), link_meta.len(), link_meta.modified().ok())
+            (
+                link_meta.is_dir(),
+                link_meta.len(),
+                link_meta.modified().ok(),
+            )
         };
 
         let name = path
@@ -92,10 +96,7 @@ impl FileEntry {
 
     /// Extension for sorting purposes.
     pub fn extension(&self) -> &str {
-        self.path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
+        self.path.extension().and_then(|e| e.to_str()).unwrap_or("")
     }
 }
 
@@ -207,7 +208,10 @@ impl PaneState {
                 SortBy::Size => a.size.cmp(&b.size),
                 SortBy::Date => a.modified.cmp(&b.modified),
                 SortBy::Extension => {
-                    let ext_cmp = a.extension().to_lowercase().cmp(&b.extension().to_lowercase());
+                    let ext_cmp = a
+                        .extension()
+                        .to_lowercase()
+                        .cmp(&b.extension().to_lowercase());
                     if ext_cmp == Ordering::Equal {
                         a.name.to_lowercase().cmp(&b.name.to_lowercase())
                     } else {

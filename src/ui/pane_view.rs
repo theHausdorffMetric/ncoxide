@@ -22,11 +22,35 @@ pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             PaneId::Left => (chunks[0], chunks[1]),
             PaneId::Right => (chunks[1], chunks[0]),
         };
-        draw_single_pane(f, app.active_pane_state(), !app.preview_focused, theme, file_chunk);
-        draw_preview_pane(f, &app.preview_state, app.preview_focused, theme, preview_chunk);
+        draw_single_pane(
+            f,
+            app.active_pane_state(),
+            !app.preview_focused,
+            theme,
+            file_chunk,
+        );
+        draw_preview_pane(
+            f,
+            &app.preview_state,
+            app.preview_focused,
+            theme,
+            preview_chunk,
+        );
     } else {
-        draw_single_pane(f, &app.left_pane, app.active_pane == PaneId::Left, theme, chunks[0]);
-        draw_single_pane(f, &app.right_pane, app.active_pane == PaneId::Right, theme, chunks[1]);
+        draw_single_pane(
+            f,
+            &app.left_pane,
+            app.active_pane == PaneId::Left,
+            theme,
+            chunks[0],
+        );
+        draw_single_pane(
+            f,
+            &app.right_pane,
+            app.active_pane == PaneId::Right,
+            theme,
+            chunks[1],
+        );
     }
 }
 

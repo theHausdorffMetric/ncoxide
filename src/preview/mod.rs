@@ -41,10 +41,16 @@ enum PreviewKind {
     Empty,
     /// Small file (or a status message): fully materialized, optionally
     /// highlighted, scrolled by line index.
-    Loaded { lines: Vec<PreviewLine>, scroll: usize },
+    Loaded {
+        lines: Vec<PreviewLine>,
+        scroll: usize,
+    },
     /// Large file: windowed plain-text reader, never fully resident. The
     /// total line count is filled in by a background scan (see [`LineCounter`]).
-    Windowed { window: FileWindow, count: CountState },
+    Windowed {
+        window: FileWindow,
+        count: CountState,
+    },
 }
 
 /// State for preview mode. Backed either by a fully-loaded line buffer (small
@@ -299,7 +305,11 @@ impl PreviewState {
                 }
                 let mut i = *scroll;
                 for _ in 0..n {
-                    i = if forward { (i + 1) % n } else { (i + n - 1) % n };
+                    i = if forward {
+                        (i + 1) % n
+                    } else {
+                        (i + n - 1) % n
+                    };
                     if search.line_matches(&line_text(&lines[i])) {
                         *scroll = i;
                         return true;
@@ -553,7 +563,9 @@ mod tests {
         assert!(state.is_large());
 
         // Search finds the needle far into the file.
-        state.set_search("UNIQUE_NEEDLE_XYZ", SearchKind::Literal).unwrap();
+        state
+            .set_search("UNIQUE_NEEDLE_XYZ", SearchKind::Literal)
+            .unwrap();
         assert!(state.search_next(true));
         assert!(rendered(&state, 1)[0].contains("UNIQUE_NEEDLE_XYZ"));
 
@@ -571,7 +583,12 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert!(filter.is_done(), "filter scan did not finish in time");
-        assert!(filter.results().iter().any(|m| m.text.contains("UNIQUE_NEEDLE_XYZ")));
+        assert!(
+            filter
+                .results()
+                .iter()
+                .any(|m| m.text.contains("UNIQUE_NEEDLE_XYZ"))
+        );
 
         let _ = fs::remove_file(&path);
     }

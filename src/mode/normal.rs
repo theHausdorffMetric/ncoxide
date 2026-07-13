@@ -14,7 +14,7 @@ pub fn handle_key(key: KeyEvent, state: &mut NormalState) -> Action {
     if state.pending_g {
         state.pending_g = false;
         return match key.code {
-            KeyCode::Char('g') => Action::CursorTop, // gg → top
+            KeyCode::Char('g') => Action::CursorTop,    // gg → top
             KeyCode::Char('e') => Action::CursorBottom, // ge → end
             KeyCode::Char('h') => Action::GotoHome,
             KeyCode::Char('r') => Action::GotoRoot,

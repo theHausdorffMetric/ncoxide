@@ -37,7 +37,6 @@ pub struct ColorConfig {
     pub inactive_border: String,
 }
 
-
 impl Default for GeneralConfig {
     fn default() -> Self {
         GeneralConfig {

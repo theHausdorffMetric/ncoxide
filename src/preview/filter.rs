@@ -183,7 +183,10 @@ mod tests {
         for _ in 0..1000 {
             body.push_str("match line\n"); // all match "match"
         }
-        File::create(&path).unwrap().write_all(body.as_bytes()).unwrap();
+        File::create(&path)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
 
         let filter = LineFilter::spawn(path.clone(), "match".to_string(), 50);
         wait(&filter);

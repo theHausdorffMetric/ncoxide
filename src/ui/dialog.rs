@@ -8,10 +8,21 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 /// Action to execute when a Confirm dialog is accepted.
 #[derive(Debug, Clone)]
 pub enum ConfirmAction {
-    Delete { paths: Vec<PathBuf> },
-    OverwriteCopy { sources: Vec<PathBuf>, target: PathBuf },
-    OverwriteMove { sources: Vec<PathBuf>, target: PathBuf },
-    OverwriteRename { source: PathBuf, new_name: String },
+    Delete {
+        paths: Vec<PathBuf>,
+    },
+    OverwriteCopy {
+        sources: Vec<PathBuf>,
+        target: PathBuf,
+    },
+    OverwriteMove {
+        sources: Vec<PathBuf>,
+        target: PathBuf,
+    },
+    OverwriteRename {
+        source: PathBuf,
+        new_name: String,
+    },
 }
 
 /// Dialog types the app can show.
@@ -58,9 +69,7 @@ pub fn draw_dialog(f: &mut Frame, dialog: &Dialog) {
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color));
 
-    let para = Paragraph::new(text)
-        .block(block)
-        .wrap(Wrap { trim: true });
+    let para = Paragraph::new(text).block(block).wrap(Wrap { trim: true });
 
     f.render_widget(para, rect);
 }

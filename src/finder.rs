@@ -46,19 +46,14 @@ impl Finder {
             .into_iter()
             .filter_entry(|e| {
                 // Skip hidden directories
-                !e.file_name()
-                    .to_str()
-                    .is_some_and(|s| s.starts_with('.'))
+                !e.file_name().to_str().is_some_and(|s| s.starts_with('.'))
             })
             .flatten()
         {
             let path = entry.path();
 
             // Get relative path for display/matching
-            let rel = path
-                .strip_prefix(root)
-                .unwrap_or(path)
-                .to_string_lossy();
+            let rel = path.strip_prefix(root).unwrap_or(path).to_string_lossy();
 
             if rel.is_empty() {
                 continue;

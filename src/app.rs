@@ -189,9 +189,10 @@ impl App {
             // Poll for events (50ms timeout for responsive UI)
             if event::poll(Duration::from_millis(50)).map_err(crate::error::NcError::Io)?
                 && let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)?
-                && key.kind == crossterm::event::KeyEventKind::Press {
-                    self.handle_key(key);
-                }
+                && key.kind == crossterm::event::KeyEventKind::Press
+            {
+                self.handle_key(key);
+            }
 
             // Hand the terminal to an external program (pager/editor) if
             // requested, then re-establish the app's TUI and force a full
@@ -404,9 +405,10 @@ impl App {
                 self.input_buffer.clear();
                 // Pre-fill rename with current filename
                 if kind == InputKind::Rename
-                    && let Some(entry) = self.active_pane_state().current_entry() {
-                        self.input_buffer = entry.name.clone();
-                    }
+                    && let Some(entry) = self.active_pane_state().current_entry()
+                {
+                    self.input_buffer = entry.name.clone();
+                }
             }
             Action::ExitToNormal => {
                 self.mode = Mode::Normal;
@@ -429,9 +431,10 @@ impl App {
             Action::EditFile => self.edit_file(),
             Action::OpenFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
-                    && !entry.is_dir {
-                        self.open_file(&entry.path);
-                    }
+                    && !entry.is_dir
+                {
+                    self.open_file(&entry.path);
+                }
             }
 
             // Goto
@@ -502,11 +505,12 @@ impl App {
             Action::TogglePreview => self.toggle_preview(),
             Action::ViewFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
-                    && !entry.is_dir {
-                        // Defer to the event loop, which owns the Terminal and
-                        // can fully restore/redraw the app after the viewer exits.
-                        self.pending_external = Some(PendingExternal::View(entry.path));
-                    }
+                    && !entry.is_dir
+                {
+                    // Defer to the event loop, which owns the Terminal and
+                    // can fully restore/redraw the app after the viewer exits.
+                    self.pending_external = Some(PendingExternal::View(entry.path));
+                }
             }
         }
 
@@ -837,9 +841,14 @@ impl App {
                         self.active_pane_mut().goto(parent);
                         // Try to position cursor on the file
                         if let Some(name) = name
-                            && let Some(pos) = self.active_pane_state().entries.iter().position(|e| e.name == name) {
-                                self.active_pane_mut().cursor = pos;
-                            }
+                            && let Some(pos) = self
+                                .active_pane_state()
+                                .entries
+                                .iter()
+                                .position(|e| e.name == name)
+                        {
+                            self.active_pane_mut().cursor = pos;
+                        }
                     }
                 }
                 Action::None
@@ -1097,7 +1106,10 @@ mod integration {
 
         // Wide enough that the long temp-dir path doesn't clip the status text.
         let screen = render(&app, 200, 24);
-        assert!(screen.contains("selected"), "status should show selection count");
+        assert!(
+            screen.contains("selected"),
+            "status should show selection count"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

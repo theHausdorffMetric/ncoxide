@@ -151,19 +151,23 @@ fn finder_overlay(f: &mut Frame, app: &App) {
     lines.push(Line::from(vec![
         Span::styled(
             " > ",
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            &app.input_buffer,
-            Style::default().fg(Color::White),
-        ),
+        Span::styled(&app.input_buffer, Style::default().fg(Color::White)),
         Span::styled("_", Style::default().fg(Color::DarkGray)),
     ]));
 
     lines.push(Line::raw(""));
 
     // Results
-    for (i, result) in app.finder_results.iter().enumerate().take(height as usize - 4) {
+    for (i, result) in app
+        .finder_results
+        .iter()
+        .enumerate()
+        .take(height as usize - 4)
+    {
         let is_cursor = i == app.finder_cursor;
         let style = if is_cursor {
             Style::default()
@@ -176,10 +180,7 @@ fn finder_overlay(f: &mut Frame, app: &App) {
 
         let indicator = if is_cursor { ">" } else { " " };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{indicator} "),
-                Style::default().fg(Color::Cyan),
-            ),
+            Span::styled(format!("{indicator} "), Style::default().fg(Color::Cyan)),
             Span::styled(&result.display_name, style),
         ]));
     }

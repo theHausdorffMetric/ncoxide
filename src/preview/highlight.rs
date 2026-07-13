@@ -26,20 +26,24 @@ pub fn highlight(content: &str, path: &Path) -> Vec<PreviewLine> {
     content
         .lines()
         .map(|line_str| {
-            let ranges = highlighter.highlight_line(line_str, &ss).unwrap_or_default();
+            let ranges = highlighter
+                .highlight_line(line_str, &ss)
+                .unwrap_or_default();
             let spans = ranges
                 .iter()
                 .map(|(style, text)| {
-                    let fg = Color::Rgb(
-                        style.foreground.r,
-                        style.foreground.g,
-                        style.foreground.b,
-                    );
+                    let fg = Color::Rgb(style.foreground.r, style.foreground.g, style.foreground.b);
                     let mut ratatui_style = Style::default().fg(fg);
-                    if style.font_style.contains(syntect::highlighting::FontStyle::BOLD) {
+                    if style
+                        .font_style
+                        .contains(syntect::highlighting::FontStyle::BOLD)
+                    {
                         ratatui_style = ratatui_style.add_modifier(Modifier::BOLD);
                     }
-                    if style.font_style.contains(syntect::highlighting::FontStyle::ITALIC) {
+                    if style
+                        .font_style
+                        .contains(syntect::highlighting::FontStyle::ITALIC)
+                    {
                         ratatui_style = ratatui_style.add_modifier(Modifier::ITALIC);
                     }
                     (text.to_string(), ratatui_style)

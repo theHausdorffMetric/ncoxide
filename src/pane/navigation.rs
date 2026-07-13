@@ -61,15 +61,19 @@ impl PaneState {
     /// Go to parent directory.
     pub fn go_parent(&mut self) {
         if let Some(parent) = self.cwd.parent().map(|p| p.to_path_buf()) {
-            let old_name = self.cwd.file_name().map(|n| n.to_string_lossy().to_string());
+            let old_name = self
+                .cwd
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string());
             self.prev_dir = Some(self.cwd.clone());
             self.cwd = parent;
             let _ = self.refresh();
             // Try to position cursor on the directory we came from
             if let Some(name) = old_name
-                && let Some(pos) = self.entries.iter().position(|e| e.name == name) {
-                    self.cursor = pos;
-                }
+                && let Some(pos) = self.entries.iter().position(|e| e.name == name)
+            {
+                self.cursor = pos;
+            }
         }
     }
 
@@ -118,7 +122,12 @@ mod tests {
         fs::write(tmp.join("bfile.txt"), "hello").unwrap();
         fs::write(tmp.join("cfile.rs"), "world").unwrap();
         let mut pane = PaneState::new(PaneId::Left, tmp.clone());
-        assert_eq!(pane.entries.len(), 3, "expected 3 entries: {:?}", pane.entries.iter().map(|e| &e.name).collect::<Vec<_>>());
+        assert_eq!(
+            pane.entries.len(),
+            3,
+            "expected 3 entries: {:?}",
+            pane.entries.iter().map(|e| &e.name).collect::<Vec<_>>()
+        );
         assert_eq!(pane.cursor, 0);
         pane.cursor_down();
         assert_eq!(pane.cursor, 1);

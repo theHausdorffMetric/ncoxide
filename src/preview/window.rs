@@ -349,8 +349,7 @@ mod tests {
     use std::io::Write;
 
     fn write_tmp(name: &str, data: &[u8]) -> std::path::PathBuf {
-        let path =
-            std::env::temp_dir().join(format!("ncoxide_win_{name}_{}", std::process::id()));
+        let path = std::env::temp_dir().join(format!("ncoxide_win_{name}_{}", std::process::id()));
         let mut f = File::create(&path).unwrap();
         f.write_all(data).unwrap();
         path

@@ -45,9 +45,10 @@ impl PaneState {
     pub fn select_by_glob(&mut self, pattern: &str) {
         for (i, entry) in self.entries.iter().enumerate() {
             if glob_match(pattern, &entry.name)
-                && let Some(s) = self.selected.get_mut(i) {
-                    *s = true;
-                }
+                && let Some(s) = self.selected.get_mut(i)
+            {
+                *s = true;
+            }
         }
     }
 }

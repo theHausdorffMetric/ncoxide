@@ -219,7 +219,10 @@ actual: ratatui 0.29, toml 1.0, dirs 6, 70 tests, ~5.6k lines).
 
 #### R17 — fmt gate is red
 
-`cargo fmt --check` fails: two diffs at `src/app.rs:189` and `src/app.rs:404`.
+`cargo fmt --check` fails. (Review initially reported two diffs in `app.rs`
+from truncated output; the drift was actually repo-wide, 19 files. Resolved
+by a dedicated whitespace-only `cargo fmt` commit on `review-0.3.0-fixes`
+ahead of S1; clippy and all 70 tests verified unchanged after formatting.)
 
 #### R18 — Log defaults: predictable /tmp path, always-Debug
 

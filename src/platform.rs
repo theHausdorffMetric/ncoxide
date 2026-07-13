@@ -83,9 +83,10 @@ pub fn get_free_disk_space(path: &Path) -> Option<u64> {
 /// Shorten a path for display: replace home dir with ~.
 pub fn display_path(path: &Path) -> String {
     if let Some(home) = dirs::home_dir()
-        && let Ok(rel) = path.strip_prefix(&home) {
-            return format!("~/{}", rel.display());
-        }
+        && let Ok(rel) = path.strip_prefix(&home)
+    {
+        return format!("~/{}", rel.display());
+    }
     path.display().to_string()
 }
 

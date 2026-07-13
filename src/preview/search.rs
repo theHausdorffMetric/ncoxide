@@ -88,7 +88,9 @@ impl Search {
         match &self.matcher {
             Matcher::Literal(f) => {
                 let len = self.query.len();
-                f.find_iter(bytes).map(|start| (start, start + len)).collect()
+                f.find_iter(bytes)
+                    .map(|start| (start, start + len))
+                    .collect()
             }
             Matcher::Regex(re) => re
                 .find_iter(bytes)

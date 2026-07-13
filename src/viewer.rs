@@ -21,7 +21,10 @@ const FILTER_MAX: usize = 200;
 enum Mode {
     Normal,
     /// Typing a search query (`/`).
-    Search { buf: String, kind: SearchKind },
+    Search {
+        buf: String,
+        kind: SearchKind,
+    },
     /// Fuzzy line-filter (`&`): a query plus the background worker and its
     /// current best matches.
     Filter {
@@ -217,7 +220,11 @@ fn respawn_filter(
     *filter = if buf.is_empty() {
         None
     } else {
-        Some(LineFilter::spawn(path.to_path_buf(), buf.to_string(), FILTER_MAX))
+        Some(LineFilter::spawn(
+            path.to_path_buf(),
+            buf.to_string(),
+            FILTER_MAX,
+        ))
     };
 }
 
@@ -238,14 +245,22 @@ fn draw_viewer(
     draw_footer(f, state, mode, goto_count, status_msg, chunks[1]);
 
     if let Mode::Filter {
-        buf, results, cursor, ..
+        buf,
+        results,
+        cursor,
+        ..
     } = mode
     {
         draw_filter_overlay(f, buf, results, *cursor);
     }
 }
 
-fn draw_filter_overlay(f: &mut ratatui::Frame, query: &str, results: &[FilterMatch], cursor: usize) {
+fn draw_filter_overlay(
+    f: &mut ratatui::Frame,
+    query: &str,
+    results: &[FilterMatch],
+    cursor: usize,
+) {
     let area = f.area();
     let width = (area.width * 3 / 4).clamp(40, area.width);
     let height = 20u16.min(area.height.saturating_sub(2));
@@ -256,7 +271,12 @@ fn draw_filter_overlay(f: &mut ratatui::Frame, query: &str, results: &[FilterMat
 
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(vec![
-        Span::styled(" > ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " > ",
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(query.to_string()),
         Span::styled("_", Style::default().fg(Color::DarkGray)),
     ]));
@@ -265,18 +285,27 @@ fn draw_filter_overlay(f: &mut ratatui::Frame, query: &str, results: &[FilterMat
     let rows = height.saturating_sub(4) as usize;
     for (i, m) in results.iter().take(rows).enumerate() {
         let style = if i == cursor {
-            Style::default().fg(Color::White).bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
         let marker = if i == cursor { ">" } else { " " };
         lines.push(Line::from(vec![
-            Span::styled(format!("{marker} {:>7} ", m.line), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{marker} {:>7} ", m.line),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(m.text.clone(), style),
         ]));
     }
     if results.is_empty() && !query.is_empty() {
-        lines.push(Line::styled("  (no matches yet…)", Style::default().fg(Color::DarkGray)));
+        lines.push(Line::styled(
+            "  (no matches yet…)",
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 
     let block = Block::default()
@@ -312,18 +341,27 @@ fn draw_footer(
 ) {
     let (text, style) = match mode {
         Mode::Search { buf, kind } => (
-            format!("/{buf}  [{}]  (Ctrl-R toggles, Enter search, Esc cancel)", kind.label()),
+            format!(
+                "/{buf}  [{}]  (Ctrl-R toggles, Enter search, Esc cancel)",
+                kind.label()
+            ),
             Style::default().fg(Color::Yellow),
         ),
         Mode::Filter { buf, results, .. } => (
-            format!("&{buf}  ({} matches)  (↑/↓ select, Enter jump, Esc cancel)", results.len()),
+            format!(
+                "&{buf}  ({} matches)  (↑/↓ select, Enter jump, Esc cancel)",
+                results.len()
+            ),
             Style::default().fg(Color::Yellow),
         ),
         Mode::Normal => {
             if let Some(msg) = status_msg {
                 (msg.to_string(), Style::default().fg(Color::Red))
             } else if let Some(n) = goto_count {
-                (format!(":{n}  (g/G to jump)"), Style::default().fg(Color::Yellow))
+                (
+                    format!(":{n}  (g/G to jump)"),
+                    Style::default().fg(Color::Yellow),
+                )
             } else {
                 let hint = if state.active_search().is_some() {
                     "/ search  n/N next  NG goto  q quit"
