@@ -27,7 +27,8 @@ A modal dual-pane file commander for the terminal, inspired by
   numbered bookmarks
 - **Sorting & filtering** -- sort by name, size, date, or extension; filter by
   substring; toggle hidden files
-- **Open in `$EDITOR`** -- press `e` to edit the file under the cursor
+- **Open in `$EDITOR`** -- press `Space` then `e` to edit the file under the
+  cursor (or `Enter` on a file)
 - **Command mode** -- `:cd`, `:sort`, and `:q` commands
 
 ## Installation
@@ -73,14 +74,15 @@ ncoxide --left ~/projects --right /tmp
 | `v` | Enter select mode |
 | `Space` | Open action menu |
 | `g` | Goto mode (`gg` top, `G` bottom, `gh` home, `gr` root) |
-| `f` | Fuzzy finder |
+| `Space` `f` | Fuzzy finder |
 | `/` | Filter files |
 | `.` | Toggle hidden files |
 | `y` | Copy to other pane |
-| `m` | Move to other pane |
+| `Space` `m` | Move to other pane |
 | `d` | Delete (with confirmation) |
 | `r` | Rename |
-| `e` | Edit in `$EDITOR` |
+| `Space` `e` | Edit in `$EDITOR` |
+| `Space` `v` | View file (pager) |
 | `?` | Help screen |
 | `q` | Quit |
 
