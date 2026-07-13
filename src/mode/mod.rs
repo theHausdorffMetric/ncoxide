@@ -87,6 +87,9 @@ pub enum Action {
     InvertSelection,
     SelectExtendDown,
     SelectExtendUp,
+    /// Clear the selection (Helix-style `;` collapse; selections otherwise
+    /// persist across mode changes, so clearing is an explicit action).
+    DeselectAll,
 
     // File operations
     CopyToOther,

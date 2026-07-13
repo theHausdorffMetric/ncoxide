@@ -72,6 +72,7 @@ ncoxide --left ~/projects --right /tmp
 | `Tab` | Switch active pane |
 | `p` | Toggle preview pane |
 | `v` | Enter select mode |
+| `;` | Clear selection (selections persist across modes) |
 | `Space` | Open action menu |
 | `g` | Goto mode (`gg` top, `G` bottom, `gh` home, `gr` root) |
 | `Space` `f` | Fuzzy finder |

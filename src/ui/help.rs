@@ -41,6 +41,7 @@ pub fn draw_help(f: &mut Frame) {
         key_line("r", "Rename", key_style),
         key_line("y", "Copy to other pane", key_style),
         key_line("p", "Toggle preview pane", key_style),
+        key_line(";", "Clear selection", key_style),
         key_line(".", "Toggle hidden files", key_style),
         key_line("/", "Search/filter", key_style),
         key_line("q", "Quit", key_style),

@@ -67,6 +67,10 @@ pub fn handle_key(key: KeyEvent, state: &mut NormalState) -> Action {
         KeyCode::Char('J') => Action::SelectExtendDown,
         KeyCode::Char('K') => Action::SelectExtendUp,
 
+        // Selections persist when leaving Select mode (Helix semantics);
+        // ';' is the explicit clear, mirroring Helix's collapse_selection.
+        KeyCode::Char(';') => Action::DeselectAll,
+
         KeyCode::Esc => Action::ExitToNormal,
 
         _ => Action::None,

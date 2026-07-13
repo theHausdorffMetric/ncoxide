@@ -14,6 +14,7 @@ pub fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('v') => Action::ToggleSelect,
         KeyCode::Char('a') => Action::SelectAll,
         KeyCode::Char('n') => Action::InvertSelection,
+        KeyCode::Char(';') => Action::DeselectAll,
         KeyCode::Char('*') => Action::EnterInput(InputKind::GlobSelect),
 
         // Act on selection

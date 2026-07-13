@@ -114,17 +114,29 @@ impl App {
         let Some(path) = self.config.bookmarks.get(index).cloned() else {
             return;
         };
-        if path.is_dir() {
-            self.active_pane_mut().goto(path);
-        } else {
+        if let Err(e) = self.active_pane_mut().goto(path.clone()) {
             self.dialog = Some(Dialog::Error {
                 message: format!(
-                    "Bookmark {} is not an accessible directory: {}",
+                    "Bookmark {} is not an accessible directory: {} ({e})",
                     index + 1,
                     path.display()
                 ),
             });
         }
+    }
+
+    /// Surface a navigation failure (unreadable or vanished directory) as an
+    /// error dialog; successful navigations pass through silently.
+    fn surface_nav(&mut self, result: Result<()>) {
+        if let Err(e) = result {
+            self.nav_error(e);
+        }
+    }
+
+    fn nav_error(&mut self, e: crate::error::NcError) {
+        self.dialog = Some(Dialog::Error {
+            message: format!("Cannot change directory: {e}"),
+        });
     }
 
     pub fn active_pane_state(&self) -> &PaneState {
@@ -240,9 +252,17 @@ impl App {
         enable_raw_mode().map_err(crate::error::NcError::Io)?;
         execute!(io::stdout(), EnterAlternateScreen).map_err(crate::error::NcError::Io)?;
         terminal.clear().map_err(crate::error::NcError::Io)?;
-        // The file may have changed (editor) and the listing should be current.
-        self.refresh_pane(self.active_pane);
+        self.after_external_return();
         Ok(())
+    }
+
+    /// Bookkeeping after an external program returns: the file may have
+    /// changed (editor), so the listing must be re-read and the preview must
+    /// reload rather than trust its by-path cache (R13).
+    fn after_external_return(&mut self) {
+        self.refresh_pane(self.active_pane);
+        self.preview_state.path = None;
+        self.update_preview();
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -385,12 +405,15 @@ impl App {
                 let ps = self.page_size;
                 self.active_pane_mut().half_page_down(ps);
             }
-            Action::EnterDir => {
-                if let Some(file_path) = self.active_pane_mut().enter() {
-                    self.open_file(&file_path);
-                }
+            Action::EnterDir => match self.active_pane_mut().enter() {
+                Ok(Some(file_path)) => self.open_file(&file_path),
+                Ok(None) => {}
+                Err(e) => self.nav_error(e),
+            },
+            Action::ParentDir => {
+                let result = self.active_pane_mut().go_parent();
+                self.surface_nav(result);
             }
-            Action::ParentDir => self.active_pane_mut().go_parent(),
             Action::SwitchPane | Action::FocusLeftPane | Action::FocusRightPane => {
                 if self.preview_active {
                     self.preview_focused = !self.preview_focused;
@@ -434,6 +457,7 @@ impl App {
             Action::InvertSelection => self.active_pane_mut().invert_selection(),
             Action::SelectExtendDown => self.active_pane_mut().select_extend_down(),
             Action::SelectExtendUp => self.active_pane_mut().select_extend_up(),
+            Action::DeselectAll => self.active_pane_mut().deselect_all(),
 
             // File operations
             Action::CopyToOther => self.do_copy(),
@@ -453,20 +477,24 @@ impl App {
             // Goto
             Action::GotoHome => {
                 if let Some(home) = dirs::home_dir() {
-                    self.active_pane_mut().goto(home);
+                    let result = self.active_pane_mut().goto(home);
+                    self.surface_nav(result);
                 }
             }
             Action::GotoRoot => {
-                self.active_pane_mut().goto(PathBuf::from("/"));
+                let result = self.active_pane_mut().goto(PathBuf::from("/"));
+                self.surface_nav(result);
             }
             Action::GotoOtherPane => {
                 let other_cwd = self.other_pane_cwd();
-                self.active_pane_mut().goto(other_cwd);
+                let result = self.active_pane_mut().goto(other_cwd);
+                self.surface_nav(result);
             }
             Action::GotoPrevious => {
                 let prev = self.active_pane_state().prev_dir.clone();
                 if let Some(prev) = prev {
-                    self.active_pane_mut().goto(prev);
+                    let result = self.active_pane_mut().goto(prev);
+                    self.surface_nav(result);
                 }
             }
             Action::GotoBookmark(index) => self.goto_bookmark(index),
@@ -837,7 +865,8 @@ impl App {
             } else {
                 self.active_pane_state().cwd.join(path)
             };
-            self.active_pane_mut().goto(path);
+            let result = self.active_pane_mut().goto(path);
+            self.surface_nav(result);
         }
     }
 
@@ -855,11 +884,13 @@ impl App {
                     self.finder_cursor = 0;
                     self.mode = Mode::Normal;
                     if path.is_dir() {
-                        self.active_pane_mut().goto(path);
+                        let result = self.active_pane_mut().goto(path);
+                        self.surface_nav(result);
                     } else if let Some(parent) = path.parent() {
                         let parent = parent.to_path_buf();
                         let name = path.file_name().map(|n| n.to_string_lossy().to_string());
-                        self.active_pane_mut().goto(parent);
+                        let result = self.active_pane_mut().goto(parent);
+                        self.surface_nav(result);
                         // Try to position cursor on the file
                         if let Some(name) = name
                             && let Some(pos) = self
@@ -1153,6 +1184,85 @@ mod integration {
     }
 
     #[test]
+    fn test_selection_persists_after_esc_and_semicolon_clears() {
+        // Helix semantics (R12): Esc keeps the selection when leaving Select
+        // mode; ';' is the explicit clear.
+        let (dir, mut app) = app_with("sel_helix", &["a.txt", "b.txt", "c.txt"]);
+        app.handle_key(key('v'));
+        app.handle_key(key('a'));
+        assert_eq!(app.left_pane.selection_count(), 3);
+
+        app.handle_key(code(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(
+            app.left_pane.selection_count(),
+            3,
+            "Esc must keep the selection (Helix semantics)"
+        );
+
+        app.handle_key(key(';'));
+        assert_eq!(app.left_pane.selection_count(), 0, "';' clears");
+
+        // ';' also works inside Select mode.
+        app.handle_key(key('v'));
+        app.handle_key(key('a'));
+        assert_eq!(app.left_pane.selection_count(), 3);
+        app.handle_key(key(';'));
+        assert_eq!(app.left_pane.selection_count(), 0);
+        assert_eq!(app.mode, Mode::Select, "';' does not leave Select mode");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_enter_unreadable_dir_surfaces_error_and_stays() {
+        // R11: entering an unreadable directory used to look like entering an
+        // empty one. Now: error dialog, cwd unchanged, listing intact.
+        use std::os::unix::fs::PermissionsExt;
+        let (dir, mut app) = app_with("unreadable", &[]);
+        let locked = dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let _ = app.left_pane.refresh();
+
+        app.handle_key(key('l')); // "locked" is the only entry
+        assert!(matches!(app.dialog, Some(Dialog::Error { .. })));
+        assert_eq!(app.left_pane.cwd, dir);
+        assert!(app.left_pane.entries.iter().any(|e| e.name == "locked"));
+
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_preview_reloads_after_external_return() {
+        // R13: the preview dedupes by path, so an external edit left stale
+        // content on screen until the cursor moved away and back.
+        let (dir, mut app) = app_with("ext_preview", &["f.txt"]);
+        fs::write(dir.join("f.txt"), b"old content").unwrap();
+        let _ = app.left_pane.refresh();
+        let preview_text = |app: &App| -> String {
+            app.preview_state
+                .render(5)
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+                .collect()
+        };
+
+        app.handle_key(key('p')); // preview on, loads f.txt
+        assert!(preview_text(&app).contains("old content"));
+
+        fs::write(dir.join("f.txt"), b"new content").unwrap();
+        app.after_external_return();
+        assert!(
+            preview_text(&app).contains("new content"),
+            "preview must re-read the file after an external program returns"
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn test_move_via_space_menu_between_panes() {
         // Same-filesystem move driven through the real key path (Space, m).
         // Must succeed without any disk-space pre-check getting in the way
@@ -1161,7 +1271,7 @@ mod integration {
         let dst = dir.join("dst");
         fs::create_dir_all(&dst).unwrap();
         let _ = app.left_pane.refresh();
-        app.right_pane.goto(dst.clone());
+        app.right_pane.goto(dst.clone()).unwrap();
 
         // Cursor onto the file ("dst" dir sorts first).
         let idx = app
