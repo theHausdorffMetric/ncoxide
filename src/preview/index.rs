@@ -67,10 +67,10 @@ impl LineIndex {
 
 impl Drop for LineIndex {
     fn drop(&mut self) {
+        // Signal and detach — never join: a read blocked on a dead network
+        // mount would freeze the UI thread (same policy as FinderWalk).
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        drop(self.handle.take());
     }
 }
 

@@ -39,6 +39,20 @@ fn ensure_safe_transfer(source: &Path, target_dir: &Path) -> Result<()> {
             dest.display()
         )));
     }
+    // A destination entry that is a symlink or hard link back to the source
+    // defeats the path comparison above: fs::copy would open through it and
+    // still truncate the source. Compare device+inode when the destination
+    // exists (both stats follow symlinks), like cp's same-file check.
+    use std::os::unix::fs::MetadataExt;
+    if let (Ok(s), Ok(d)) = (fs::metadata(source), fs::metadata(&dest))
+        && s.dev() == d.dev()
+        && s.ino() == d.ino()
+    {
+        return Err(NcError::FileOperation(format!(
+            "source and destination are the same file: {}",
+            source.display()
+        )));
+    }
     Ok(())
 }
 
@@ -390,6 +404,41 @@ mod tests {
         );
 
         let _ = fs::remove_file(&alias);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_copy_onto_symlinked_destination_refused() {
+        // dest/f.txt is a symlink back to the source: the path guard can't
+        // see it, but the inode check must (verification review finding 1).
+        let tmp = guard_dir("symdest");
+        let a = tmp.join("a");
+        let b = tmp.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "important").unwrap();
+        std::os::unix::fs::symlink(a.join("f.txt"), b.join("f.txt")).unwrap();
+
+        assert!(copy_to(&a.join("f.txt"), &b).is_err());
+        assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "important");
+
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_copy_onto_hardlinked_destination_refused() {
+        let tmp = guard_dir("harddest");
+        let a = tmp.join("a");
+        let b = tmp.join("b");
+        fs::create_dir_all(&a).unwrap();
+        fs::create_dir_all(&b).unwrap();
+        fs::write(a.join("f.txt"), "important").unwrap();
+        fs::hard_link(a.join("f.txt"), b.join("f.txt")).unwrap();
+
+        assert!(copy_to(&a.join("f.txt"), &b).is_err());
+        assert!(move_to(&a.join("f.txt"), &b).is_err());
+        assert_eq!(fs::read_to_string(a.join("f.txt")).unwrap(), "important");
+
         let _ = fs::remove_dir_all(&tmp);
     }
 

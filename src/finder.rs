@@ -103,10 +103,13 @@ impl FinderWalk {
 
 impl Drop for FinderWalk {
     fn drop(&mut self) {
+        // Signal and detach — never join: the walker only checks the flag
+        // between yielded entries, so a readdir blocked on a dead network
+        // mount would otherwise freeze the UI thread on Esc/Enter. A
+        // detached walker exits at its next flag check; its shared list is
+        // dropped with the last Arc.
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            let _ = h.join();
-        }
+        drop(self.handle.take());
     }
 }
 

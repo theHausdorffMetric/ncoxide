@@ -339,3 +339,48 @@ hygiene, misleading docs) and are each small. S5–S8 are behavioral corrections
 S11 (feature F1) executes right after S8, with which it shares the
 preview-invalidation mechanism. S9 is the largest change (threading + render
 path). S10 is cleanup and can be split further if convenient.
+
+---
+
+## Post-merge verification review (2026-07-14)
+
+After S1–S11 merged to master, an independent multi-agent review of the full
+branch diff (21 agents: per-angle finders + adversarial verifiers) surfaced
+13 defects in the new code itself. Resolutions, pre-0.4.0:
+
+**Fixed (V1–V6):**
+- **V1** `operations.rs` — a destination entry that is a *symlink or hard
+  link back to the source* defeated the S1 path guard; `fs::copy` truncated
+  the source through it. Fixed with a device+inode same-file check (cp-style)
+  when the destination exists. Tests: symlink dest, hard-link dest.
+- **V2** `app.rs execute_move` — S5 removed the aggregate space check
+  entirely, so an over-capacity multi-file *cross-device* move partially
+  completed. Restored the aggregate pre-check for the cross-device subset of
+  sources only (same-fs renames stay unchecked).
+- **V3** `FinderWalk`/`LineIndex`/`LineFilter` Drop joined their worker
+  thread on the UI thread; a readdir/read blocked on a dead network mount
+  froze the TUI. All three now signal-and-detach, never join.
+- **V4** finder progress ticks reset `finder_cursor` to 0 (arrow selection
+  never stuck during a walk) and re-scored the full list every 50 ms holding
+  the walk lock. Progress re-scores now preserve the cursor (clamped) and are
+  throttled to ≥512 new paths or the completion transition.
+- **V5** dir preview went stale on `.` (hidden toggle) — the by-path dedupe
+  didn't know the preview depends on `show_hidden`. Fixed structurally:
+  preview invalidation is folded into `refresh_pane`/`refresh_both`, which
+  also removed the four copy-pasted refresh+invalidate pairs (V6).
+- **V6** panic hook now also emits `cursor::Show` (ratatui hides the cursor
+  during draw; the normal `show_cursor` cleanup can't run during an unwind).
+
+**Accepted / deferred:**
+- Windowed backward-search wrap can scan to EOF on the UI thread for
+  unmatched queries. Same cost class as the pre-existing forward search from
+  the top of a large file (any wrapping search must visit every line once);
+  proper fix is an async/cancellable search — follow-up, not a 0.4.0 blocker.
+- `accepts_text` could drop modifier-tagged composed characters (AltGr /
+  macOS Option). ncoxide is Linux-only and does not enable crossterm's
+  keyboard-enhancement flags, so composed chars arrive unmodified in
+  practice; revisit if kitty-protocol support is ever enabled.
+- Minor cleanups deferred: the two disk-space shortfall messages differ in
+  wording (`app.rs` copy check vs `operations.rs` fallback check); the dir
+  preview re-implements the pane's dirs-first sort; `Finder::find` is
+  test-only. All cosmetic.

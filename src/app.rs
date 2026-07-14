@@ -180,7 +180,9 @@ impl App {
         let default_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |info| {
             let _ = disable_raw_mode();
-            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            // Also re-show the cursor: ratatui hides it during draw, and the
+            // ordinary show_cursor cleanup can't run during an unwind.
+            let _ = execute!(io::stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
             default_hook(info);
         }));
 
@@ -291,8 +293,7 @@ impl App {
     /// changed (editor), so the listing must be re-read and the preview must
     /// reload rather than trust its by-path cache (R13).
     fn after_external_return(&mut self) {
-        self.refresh_pane(self.active_pane);
-        self.invalidate_preview();
+        self.refresh_pane(self.active_pane); // also invalidates the preview
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -620,8 +621,17 @@ impl App {
 
     /// Refresh a single pane, surfacing any failure (e.g. the cwd was
     /// unmounted or its permissions revoked) as an error dialog instead of
-    /// leaving a stale listing on screen.
+    /// leaving a stale listing on screen. Always invalidates the preview:
+    /// refreshes follow filesystem or view-setting changes, and a previewed
+    /// directory/file must reflect them (folding this in here — rather than
+    /// pairing invalidate_preview at each call site — is what keeps the next
+    /// file-op handler from reintroducing a stale-preview bug).
     fn refresh_pane(&mut self, id: PaneId) {
+        self.refresh_pane_inner(id);
+        self.invalidate_preview();
+    }
+
+    fn refresh_pane_inner(&mut self, id: PaneId) {
         let result = match id {
             PaneId::Left => self.left_pane.refresh(),
             PaneId::Right => self.right_pane.refresh(),
@@ -634,8 +644,9 @@ impl App {
     }
 
     fn refresh_both(&mut self) {
-        self.refresh_pane(PaneId::Left);
-        self.refresh_pane(PaneId::Right);
+        self.refresh_pane_inner(PaneId::Left);
+        self.refresh_pane_inner(PaneId::Right);
+        self.invalidate_preview();
     }
 
     /// Build an overwrite-confirmation message for the names in `paths` that
@@ -665,7 +676,6 @@ impl App {
         }
 
         self.refresh_both();
-        self.invalidate_preview();
 
         if !errors.is_empty() {
             self.dialog = Some(Dialog::Error {
@@ -727,9 +737,29 @@ impl App {
     }
 
     fn execute_move(&mut self, paths: &[PathBuf], target: &Path) {
-        // No space pre-check here: a same-filesystem move is a rename and
-        // needs no free space. The cross-device copy+delete fallback checks
-        // space inside `move_to` before copying anything.
+        // Same-device sources move by rename and need no free space. Sources
+        // on a *different* device fall back to copy+delete, so their
+        // aggregate size is checked up front — a partial multi-file move
+        // (some sources moved, one failing midway) is worse than a refusal.
+        // move_to keeps its own per-source fallback check as backstop.
+        use std::os::unix::fs::MetadataExt;
+        if let Ok(target_dev) = std::fs::metadata(target).map(|m| m.dev()) {
+            let cross: Vec<PathBuf> = paths
+                .iter()
+                .filter(|p| {
+                    std::fs::symlink_metadata(p)
+                        .map(|m| m.dev() != target_dev)
+                        .unwrap_or(false) // fail-open like the copy pre-check
+                })
+                .cloned()
+                .collect();
+            if !cross.is_empty()
+                && let Some(msg) = self.check_disk_space(&cross, target)
+            {
+                self.dialog = Some(Dialog::Error { message: msg });
+                return;
+            }
+        }
         self.run_batch(paths, |path| operations::move_to(path, target));
     }
 
@@ -787,7 +817,6 @@ impl App {
             });
         } else {
             self.refresh_pane(self.active_pane);
-            self.invalidate_preview();
         }
     }
 
@@ -826,7 +855,6 @@ impl App {
             });
         } else {
             self.refresh_pane(self.active_pane);
-            self.invalidate_preview();
         }
     }
 
@@ -1022,7 +1050,14 @@ impl App {
     /// Re-score the finder while its background walk is still collecting, so
     /// results stream in without keystrokes. Returns true when the visible
     /// results may have changed (the caller redraws).
+    ///
+    /// Throttled: each pass is a full score of the collected list on the UI
+    /// thread (holding the walk lock), so only re-score on completion or
+    /// after a decent chunk of new paths — not on every 50ms tick. The
+    /// user's cursor position is preserved (clamped), not reset, so arrow
+    /// navigation sticks while results stream in.
     fn refresh_finder_progress(&mut self) -> bool {
+        const RESCORE_BATCH: usize = 512;
         if self.mode != Mode::Finder || self.input_buffer.is_empty() {
             return false;
         }
@@ -1033,7 +1068,13 @@ impl App {
         if progress == self.finder_seen {
             return false;
         }
+        let done_changed = progress.1 != self.finder_seen.1;
+        if !done_changed && progress.0.saturating_sub(self.finder_seen.0) < RESCORE_BATCH {
+            return false;
+        }
+        let cursor = self.finder_cursor;
         self.update_finder_results();
+        self.finder_cursor = cursor.min(self.finder_results.len().saturating_sub(1));
         true
     }
 }
@@ -1575,6 +1616,33 @@ mod integration {
             "cursor row scrolled into view: {left_half}"
         );
         assert!(!left_half.contains("file00.txt"), "top scrolled out");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dir_preview_refreshes_on_hidden_toggle() {
+        // The preview dedupes by path, but a dir preview also depends on
+        // show_hidden; '.' must reload it (verification review finding 6).
+        let (dir, mut app) = app_with("dirprev_hidden", &[]);
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join(".dotfile"), b"x").unwrap();
+        fs::write(sub.join("plain.txt"), b"y").unwrap();
+        let _ = app.left_pane.refresh();
+
+        app.handle_key(key('p')); // preview "sub"
+        assert!(!preview_text(&app).contains(".dotfile"));
+
+        app.handle_key(key('.'));
+        assert!(
+            preview_text(&app).contains(".dotfile"),
+            "dir preview must reload on hidden toggle: {}",
+            preview_text(&app)
+        );
+
+        app.handle_key(key('.'));
+        assert!(!preview_text(&app).contains(".dotfile"));
 
         let _ = fs::remove_dir_all(&dir);
     }
