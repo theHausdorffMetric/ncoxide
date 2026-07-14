@@ -11,7 +11,7 @@ readme = "README.md"
 keywords = ["file-manager", "tui", "terminal", "dual-pane", "helix"]
 categories = ["command-line-utilities", "filesystem"]
 rust-version = "1.85"
-exclude = [".claude/"]
+exclude = [".claude/", "docs/"]
 
 [dependencies]
 ratatui = "0.29"
