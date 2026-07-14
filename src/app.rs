@@ -261,8 +261,7 @@ impl App {
     /// reload rather than trust its by-path cache (R13).
     fn after_external_return(&mut self) {
         self.refresh_pane(self.active_pane);
-        self.preview_state.path = None;
-        self.update_preview();
+        self.invalidate_preview();
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
@@ -645,6 +644,7 @@ impl App {
         }
 
         self.refresh_both();
+        self.invalidate_preview();
 
         if !errors.is_empty() {
             self.dialog = Some(Dialog::Error {
@@ -766,6 +766,7 @@ impl App {
             });
         } else {
             self.refresh_pane(self.active_pane);
+            self.invalidate_preview();
         }
     }
 
@@ -804,6 +805,7 @@ impl App {
             });
         } else {
             self.refresh_pane(self.active_pane);
+            self.invalidate_preview();
         }
     }
 
@@ -955,14 +957,20 @@ impl App {
             return;
         }
         if entry.is_dir {
-            self.preview_state = PreviewState::message(
-                Some(entry.path),
-                "[Directory]",
-                ratatui::style::Color::DarkGray,
-            );
+            let show_hidden = self.active_pane_state().show_hidden;
+            self.preview_state = preview::load_dir_preview(&entry.path, show_hidden);
         } else {
             self.preview_state = preview::load_preview(&entry.path);
         }
+    }
+
+    /// A file operation changed the filesystem: drop the preview's by-path
+    /// cache and rebuild, so a previewed directory reflects the op
+    /// immediately. Needed explicitly because the dialog-confirm key path
+    /// bypasses `dispatch_action`'s trailing `update_preview`.
+    fn invalidate_preview(&mut self) {
+        self.preview_state.path = None;
+        self.update_preview();
     }
 
     fn enter_finder(&mut self) {
@@ -1116,6 +1124,15 @@ mod integration {
         }
     }
 
+    /// Flatten the preview's rendered lines to plain text.
+    fn preview_text(app: &App) -> String {
+        app.preview_state
+            .render(30)
+            .iter()
+            .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+            .collect()
+    }
+
     /// Render the app to a `TestBackend` and flatten the buffer to text.
     fn render(app: &App, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
@@ -1241,13 +1258,6 @@ mod integration {
         let (dir, mut app) = app_with("ext_preview", &["f.txt"]);
         fs::write(dir.join("f.txt"), b"old content").unwrap();
         let _ = app.left_pane.refresh();
-        let preview_text = |app: &App| -> String {
-            app.preview_state
-                .render(5)
-                .iter()
-                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
-                .collect()
-        };
 
         app.handle_key(key('p')); // preview on, loads f.txt
         assert!(preview_text(&app).contains("old content"));
@@ -1418,6 +1428,43 @@ mod integration {
 
         app.handle_key(code(KeyCode::Esc));
         assert!(!app.show_help);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dir_preview_shows_contents_and_refreshes_after_ops() {
+        // F1: a directory under the cursor previews its contents (dirs with
+        // trailing slash, files plain); file operations invalidate the
+        // preview so it re-reads the listing.
+        let (dir, mut app) = app_with("dirprev", &[]);
+        let sub = dir.join("sub");
+        fs::create_dir_all(sub.join("inner_dir")).unwrap();
+        fs::write(sub.join("child.txt"), b"x").unwrap();
+        let _ = app.left_pane.refresh();
+
+        app.handle_key(key('p')); // preview on; cursor on "sub"
+        let text = preview_text(&app);
+        assert!(
+            text.contains("inner_dir/"),
+            "dirs listed with slash: {text}"
+        );
+        assert!(text.contains("child.txt"), "files listed: {text}");
+
+        // Change the previewed dir's contents behind the preview's back,
+        // then perform any file op — the invalidation must pick it up.
+        // ("sub" still sorts before "zzz", so the cursor stays on it.)
+        fs::write(sub.join("added.txt"), b"y").unwrap();
+        app.handle_key(key(' '));
+        app.handle_key(key('n'));
+        type_str(&mut app, "zzz");
+        app.handle_key(code(KeyCode::Enter));
+
+        let text = preview_text(&app);
+        assert!(
+            text.contains("added.txt"),
+            "preview must re-read the dir after a file op: {text}"
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

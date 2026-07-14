@@ -15,7 +15,8 @@ A modal dual-pane file commander for the terminal, inspired by
 - **Fuzzy finder** -- powered by nucleo-matcher (the same engine Helix uses)
 - **Syntax-highlighted preview** -- inline file preview with syntect for source
   files; large files and logs stream through a windowed reader with bounded
-  memory (scrolls multi-GB files without loading them)
+  memory (scrolls multi-GB files without loading them); directories preview
+  their contents as a listing
 - **File viewer** -- full-screen pager (Space then `v`) with in-file search
   (`/`, literal or `Ctrl-R` regex, `n`/`N` to cycle matches), goto-line
   (`<N>G`), and fuzzy line-filter (`&`, powered by nucleo-matcher)

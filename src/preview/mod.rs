@@ -8,7 +8,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub use filter::{FilterMatch, LineFilter};
@@ -360,6 +360,92 @@ pub fn load_preview(path: &Path) -> PreviewState {
     load_preview_with_threshold(path, HIGHLIGHT_MAX)
 }
 
+/// Cap on directory-preview entries; a tail line notes what was elided so
+/// truncation is never silent.
+const DIR_PREVIEW_MAX: usize = 1000;
+
+/// Build a preview listing a directory's contents: directories first (blue,
+/// bold, trailing `/`), then files, case-insensitively by name — mirroring
+/// the pane's default order. Backed by `PreviewKind::Loaded`, so scrolling
+/// and in-preview search work unchanged (F1).
+pub fn load_dir_preview(path: &Path, show_hidden: bool) -> PreviewState {
+    let read_dir = match fs::read_dir(path) {
+        Ok(rd) => rd,
+        Err(e) => {
+            return PreviewState::message(
+                Some(path.to_path_buf()),
+                &format!("Cannot read directory: {e}"),
+                Color::Red,
+            );
+        }
+    };
+
+    // (name, is_dir, is_symlink)
+    let mut items: Vec<(String, bool, bool)> = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !show_hidden && name.starts_with('.') {
+            continue;
+        }
+        let file_type = entry.file_type();
+        let is_symlink = file_type.as_ref().is_ok_and(|t| t.is_symlink());
+        // Symlink dir-ness follows the target (mirrors FileEntry::from_path).
+        let is_dir = match &file_type {
+            Ok(t) if t.is_symlink() => entry.path().is_dir(),
+            Ok(t) => t.is_dir(),
+            Err(_) => false,
+        };
+        items.push((name, is_dir, is_symlink));
+    }
+
+    if items.is_empty() {
+        return PreviewState::message(Some(path.to_path_buf()), "[empty]", Color::DarkGray);
+    }
+
+    items.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+    });
+
+    let total = items.len();
+    let mut lines: Vec<PreviewLine> = items
+        .into_iter()
+        .take(DIR_PREVIEW_MAX)
+        .map(|(name, is_dir, is_symlink)| {
+            let (text, style) = if is_dir {
+                (
+                    format!("{name}/"),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if is_symlink {
+                (name, Style::default().fg(Color::Magenta))
+            } else {
+                (name, Style::default())
+            };
+            PreviewLine {
+                spans: vec![(text, style)],
+            }
+        })
+        .collect();
+    if total > DIR_PREVIEW_MAX {
+        lines.push(PreviewLine {
+            spans: vec![(
+                format!("… {} more entries", total - DIR_PREVIEW_MAX),
+                Style::default().fg(Color::DarkGray),
+            )],
+        });
+    }
+
+    PreviewState {
+        path: Some(path.to_path_buf()),
+        is_binary: false,
+        kind: PreviewKind::Loaded { lines, scroll: 0 },
+        active_search: None,
+    }
+}
+
 fn load_preview_with_threshold(path: &Path, threshold: u64) -> PreviewState {
     let Ok(meta) = fs::metadata(path) else {
         return PreviewState::message(Some(path.to_path_buf()), "Cannot read file", Color::Red);
@@ -609,6 +695,63 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(hl, "world", "only the match should be highlighted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dir_preview_sorts_dirs_first_and_respects_hidden() {
+        let dir = tmp("dirprev");
+        fs::create_dir_all(dir.join("zeta_dir")).unwrap();
+        fs::write(dir.join("Alpha.txt"), "").unwrap();
+        fs::write(dir.join("beta.txt"), "").unwrap();
+        fs::write(dir.join(".hidden"), "").unwrap();
+
+        let state = load_dir_preview(&dir, false);
+        let lines = rendered(&state, 10);
+        assert_eq!(lines.len(), 3, "hidden entry filtered: {lines:?}");
+        assert!(lines[0].contains("zeta_dir/"), "dir first, with slash");
+        assert!(lines[1].contains("Alpha.txt"), "case-insensitive order");
+        assert!(lines[2].contains("beta.txt"));
+
+        let state = load_dir_preview(&dir, true);
+        let lines = rendered(&state, 10);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[1].contains(".hidden"), "hidden shown when enabled");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dir_preview_caps_with_tail_line() {
+        let dir = tmp("dircap");
+        for i in 0..DIR_PREVIEW_MAX + 5 {
+            fs::write(dir.join(format!("f{i:05}.txt")), "").unwrap();
+        }
+        let state = load_dir_preview(&dir, false);
+        let lines = rendered(&state, DIR_PREVIEW_MAX + 10);
+        assert_eq!(lines.len(), DIR_PREVIEW_MAX + 1, "cap + tail line");
+        assert!(
+            lines.last().unwrap().contains("5 more entries"),
+            "truncation is announced: {:?}",
+            lines.last()
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_dir_preview_empty_and_unreadable() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp("dirempty");
+        let state = load_dir_preview(&dir, false);
+        assert!(rendered(&state, 1)[0].contains("[empty]"));
+
+        let locked = dir.join("locked");
+        fs::create_dir_all(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let state = load_dir_preview(&locked, false);
+        assert!(rendered(&state, 1)[0].contains("Cannot read directory"));
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755)).unwrap();
 
         let _ = fs::remove_dir_all(&dir);
     }
