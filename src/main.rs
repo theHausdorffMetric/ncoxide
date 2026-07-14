@@ -17,16 +17,27 @@ struct Cli {
     #[arg(short, long)]
     right: Option<PathBuf>,
 
-    /// Log file path
-    #[arg(long, default_value = "/tmp/ncoxide.log")]
-    log: PathBuf,
+    /// Log file path (defaults to $XDG_STATE_HOME/ncoxide/ncoxide.log)
+    #[arg(long)]
+    log: Option<PathBuf>,
+}
+
+/// Default log location: the XDG state dir, not a predictable name in
+/// world-writable /tmp (multi-user clobber / pre-creation hazard).
+fn default_log_path() -> PathBuf {
+    dirs::state_dir()
+        .or_else(dirs::cache_dir)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("ncoxide")
+        .join("ncoxide.log")
 }
 
 fn main() {
     let cli = Cli::parse();
 
     // Set up logging
-    if let Err(e) = setup_logging(&cli.log) {
+    let log_path = cli.log.unwrap_or_else(default_log_path);
+    if let Err(e) = setup_logging(&log_path) {
         eprintln!("Failed to set up logging: {e}");
     }
 
@@ -51,6 +62,9 @@ fn main() {
 }
 
 fn setup_logging(log_path: &Path) -> Result<(), fern::InitError> {
+    if let Some(parent) = log_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(
@@ -61,8 +75,20 @@ fn setup_logging(log_path: &Path) -> Result<(), fern::InitError> {
                 message
             ))
         })
-        .level(log::LevelFilter::Debug)
+        .level(log::LevelFilter::Info)
         .chain(fern::log_file(log_path)?)
         .apply()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_log_path_is_namespaced() {
+        let path = default_log_path();
+        assert!(path.ends_with("ncoxide/ncoxide.log"), "{path:?}");
+        assert_ne!(path, PathBuf::from("/tmp/ncoxide.log"));
+    }
 }

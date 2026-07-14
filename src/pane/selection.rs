@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn test_selection_ops() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_sel_ops");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_sel_ops_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("a.txt"), "").unwrap();

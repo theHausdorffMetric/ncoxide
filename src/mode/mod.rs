@@ -56,7 +56,6 @@ impl Mode {
 pub enum Action {
     None,
     Quit,
-    Redraw,
 
     // Navigation
     CursorUp,
@@ -98,7 +97,6 @@ pub enum Action {
     Rename(String),
     Mkdir(String),
     EditFile,
-    OpenFile,
 
     // Goto
     GotoHome,
@@ -125,11 +123,8 @@ pub enum Action {
     InputConfirm,
     InputCancel,
 
-    // Finder mode
+    // Finder mode (in-finder keys are handled directly by the app)
     EnterFinder,
-    FinderSelect(usize),
-    FinderCursorUp,
-    FinderCursorDown,
 
     // Preview mode
     TogglePreview,

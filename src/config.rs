@@ -67,7 +67,9 @@ impl Default for ColorConfig {
 impl Config {
     /// Load config from the standard XDG path, or return defaults.
     pub fn load() -> Self {
-        let path = config_path();
+        let Some(path) = config_path() else {
+            return Config::default();
+        };
         if path.exists() {
             match Self::load_from(&path) {
                 Ok(config) => config,
@@ -86,9 +88,11 @@ impl Config {
         toml::from_str(&content).map_err(|e| NcError::Config(e.to_string()))
     }
 
-    /// Save config to the standard XDG path.
+    /// Save config to the standard XDG path. (Not yet called from the app;
+    /// kept as the public API for upcoming bookmark/settings persistence.)
     pub fn save(&self) -> Result<()> {
-        let path = config_path();
+        let path =
+            config_path().ok_or_else(|| NcError::Config("no config directory found".into()))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(NcError::Io)?;
         }
@@ -97,12 +101,11 @@ impl Config {
     }
 }
 
-/// Standard config path: ~/.config/ncoxide/config.toml
-fn config_path() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("~/.config"))
-        .join("ncoxide")
-        .join("config.toml")
+/// Standard config path: ~/.config/ncoxide/config.toml. `None` when no
+/// config directory can be determined (no $HOME) — a literal "~" fallback
+/// would never expand.
+fn config_path() -> Option<PathBuf> {
+    Some(dirs::config_dir()?.join("ncoxide").join("config.toml"))
 }
 
 #[cfg(test)]

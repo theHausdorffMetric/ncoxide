@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_copy_file() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_copy");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_copy_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let src = tmp.join("src");
         let dst = tmp.join("dst");
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn test_copy_dir() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_copydir");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_copydir_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let src = tmp.join("src");
         let dst = tmp.join("dst");
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn test_move_file() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_move");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_move_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let src_dir = tmp.join("src");
         let dst_dir = tmp.join("dst");
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn test_delete() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_delete");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_delete_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("file.txt"), "deleteme").unwrap();
@@ -271,7 +271,7 @@ mod tests {
 
     #[test]
     fn test_rename() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_rename");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_rename_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
         fs::write(tmp.join("old.txt"), "renamed").unwrap();
@@ -286,7 +286,7 @@ mod tests {
 
     #[test]
     fn test_mkdir() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_mkdir");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_mkdir_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -298,7 +298,10 @@ mod tests {
 
     #[test]
     fn test_mkdir_existing_errors() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_mkdir_existing");
+        let tmp = std::env::temp_dir().join(format!(
+            "ncoxide_test_mkdir_existing_{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).unwrap();
 
@@ -421,7 +424,8 @@ mod tests {
 
     #[test]
     fn test_path_size_recursive() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_path_size");
+        let tmp =
+            std::env::temp_dir().join(format!("ncoxide_test_path_size_{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp);
         let inner = tmp.join("inner");
         fs::create_dir_all(&inner).unwrap();

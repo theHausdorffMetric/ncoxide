@@ -107,25 +107,30 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 |-----|--------|
 | `j` / `k` / `Up` / `Down` | Cursor down / up |
 | `h` / `Backspace` | Parent directory |
-| `l` / `Enter` | Enter directory / open file |
+| `l` / `Enter` | Enter directory / open file (`$EDITOR`) |
 | `J` / `K` | Move cursor + select (extend) |
 | `G` | Jump to bottom |
 | `gg` | Jump to top |
 | `Ctrl-d` / `Ctrl-u` | Half-page down / up |
-| `Tab` | Toggle active pane |
-| `/` | Search/filter files |
+| `PageUp` / `PageDown` | Page up / down |
+| `Tab` | Toggle active pane (`←`/`→` focus left/right) |
+| `/` | Filter files (substring) |
 | `v` | Enter Select mode |
+| `;` | Clear selection |
 | `Space` | Enter Space mode (leader) |
 | `g` | Enter Goto mode |
 | `:` | Enter Command mode |
 | `.` | Toggle hidden files |
-| `P` | Toggle Preview mode |
+| `p` / `P` | Toggle preview pane |
 | `r` | Quick rename (Input mode) |
 | `d` | Delete (with confirm dialog) |
-| `y` | Yank (copy path to register) |
-| `p` | Paste (from register to current dir) |
+| `y` | Copy to other pane |
 | `?` | Help overlay |
 | `q` | Quit |
+
+There are no yank/paste registers: `y` copies straight to the other pane,
+Norton-Commander style. (An earlier draft of this keymap had `y`/`p`
+registers; the implementation deliberately went dual-pane-native instead.)
 
 #### Select Mode (`v`)
 | Key | Action |
@@ -134,10 +139,11 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 | `v` | Toggle individual |
 | `a` | Select all |
 | `n` | Invert selection |
+| `;` | Clear selection |
 | `*` | Select by glob pattern |
-| `d` / `y` / `p` | Delete / yank / paste selected |
+| `d` / `y` | Delete / copy selected to other pane |
 | `Space` | Enter Space mode with selection |
-| `Esc` | Clear selection, return to Normal |
+| `Esc` | Return to Normal — the selection **persists** (Helix semantics; decided 2026-07-13, see docs/review-0.3.0.md R12). `;` is the explicit clear, mirroring Helix's collapse_selection. |
 
 #### Space Mode (leader menu popup)
 | Key | Action |
@@ -148,11 +154,13 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 | `r` | Rename |
 | `n` | New directory |
 | `e` | Edit with $EDITOR |
+| `v` | View file (built-in pager) |
 | `f` | Fuzzy file finder |
-| `s` | Sort menu |
+| `s` | Sort menu (via command line) |
 | `i` | File info |
-| `b` | Bookmarks |
 | `?` | Show all commands |
+
+(Bookmarks are reached via Goto `1`-`9`, not a Space entry.)
 
 #### Goto Mode (`g`)
 | Key | Action |
@@ -170,16 +178,20 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 |---------|--------|
 | `:q` | Quit |
 | `:sort name/size/date/ext` | Change sort |
-| `:filter <pattern>` | Filter visible files |
-| `:cd <path>` | Change directory |
-| `:shell <cmd>` | Run shell command |
+| `:filter <pattern>` | Filter visible files (no pattern clears) |
+| `:cd <path>` | Change directory (no path: home) |
 | `:set show_hidden` | Toggle setting |
 
-#### Preview Mode (`P` toggle)
+(`:shell` remains unimplemented — see "What's Not Yet Implemented".)
+
+#### Preview Mode (`p` / `P` toggle)
 - Repurposes inactive pane to show syntax-highlighted file content
-- Cursor movement in file pane auto-updates preview
-- Focus on preview pane: Up/Down scrolls file content
-- `P` again restores inactive pane to directory listing
+- Directories preview their contents as a listing (dirs first, hidden
+  filter respected, capped at 1000 entries with an explicit tail line)
+- Cursor movement in file pane auto-updates preview; file operations and
+  external edits invalidate it
+- Focus on preview pane (Tab): Up/Down scrolls content
+- `p` again restores inactive pane to directory listing
 
 ### Module Structure
 
@@ -219,21 +231,22 @@ ncoxide/src/
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| ratatui | 0.30 | Terminal UI framework |
+| ratatui | 0.29 | Terminal UI framework |
 | crossterm | 0.29 | Terminal backend (event-stream) |
 | thiserror | 2 | Error derive macros |
 | serde | 1 | Config serialization |
-| toml | 0.8 | Config file format |
+| toml | 1.0 | Config file format |
 | clap | 4 | CLI argument parsing |
 | jiff | 0.2 | Date/time (consistent with qloxide) |
 | walkdir | 2 | Recursive directory traversal |
-| dirs | 5 | XDG directory paths |
-| log + fern | 0.4 / 0.6 | Logging |
+| dirs | 6 | XDG directory paths |
+| log + fern | 0.4 / 0.7 | Logging |
 | libc | 0.2 | statvfs for disk space |
 | unicode-width | 0.2 | Terminal column widths |
 | nucleo-matcher | 0.3 | Fuzzy find (helix's engine) |
 | syntect | 5 | Syntax highlighting |
 | syntect-tui | 3 | syntect → ratatui Span conversion |
+| regex + memchr | 1 / 2 | Viewer in-file search (smart-case, literal fast path) |
 
 ### Architectural Decisions
 
@@ -243,50 +256,40 @@ ncoxide/src/
 4. **TOML config** at `~/.config/ncoxide/config.toml` (XDG compliant).
 5. **Linux-only:** No Windows/winapi. Direct Unix APIs. Simplifies platform.rs.
 6. **Edition 2024:** Rust 2024 edition with its stricter borrowing rules.
+7. **Helix alignment (decided 2026-07-13):** when an interaction-design
+   question is ambiguous, resolve it the way Helix does — not Vim, not
+   Midnight Commander. Applied so far: Esc keeps the selection and `;`
+   clears it (collapse_selection analog); search wraps at file ends.
 
 ---
 
 ## 3. Implementation Status
 
-### Build Status
+### Build Status (as of the 0.3.x review pass, 2026-07-14)
 
 | Metric | Status |
 |--------|--------|
-| `cargo build` | Clean |
-| `cargo clippy` | Zero warnings |
-| `cargo test` | **27 passed**, 0 failed |
+| `cargo fmt` + `cargo clippy -D warnings` + build + test | Clean |
+| `cargo test` | **101 passed**, 0 failed (+2 `--ignored` large-file proofs) |
 | Edition | Rust 2024 |
-| Git | 5 commits (latest: `cbc1aa8`) |
-| Location | `~/dev/nc/ncoxide/` |
+| Location | `~/dev/ideas/sourcehut/ncoxide/` |
 | Origin | `git@git.sr.ht:~dpclaude/ncoxide` (dev) |
 | Upstream | `git@git.sr.ht:~danprobst/ncoxide` (release) |
 | Tracker | `~danprobst/ncoxide-dev` (todo.sr.ht, id: 19112) |
 
 ### Code Statistics
 
-| Component | Files | Lines |
-|-----------|------:|------:|
-| Core (app, config, error, lib, main) | 5 | 895 |
-| Modes (normal, select, space, goto, command, input) | 7 | 337 |
-| Pane (state, navigation, selection, operations) | 4 | 769 |
-| UI (draw, pane_view, status_line, dialog, help) | 5 | 545 |
-| Platform + Preview + Viewer + Finder | 4 | 610 |
-| **Total** | **25** | **3,131** |
+| Component | Lines |
+|-----------|------:|
+| Core (app, config, error, lib, main) | 1,910 |
+| Modes (mod, normal, select, space, goto, command, input) | 362 |
+| Pane (state, navigation, selection, operations) | 1,120 |
+| UI (draw, pane_view, status_line, dialog, help) | 676 |
+| Platform + Preview + Viewer + Finder | 2,841 |
+| **Total (incl. tests)** | **6,909** |
 
-### Test Coverage
-
-| Module | Tests | What's Tested |
-|--------|------:|---------------|
-| config | 3 | Default config, roundtrip serialize, TOML parsing |
-| finder | 2 | Basic fuzzy match, empty query |
-| pane/mod | 4 | State creation, sort-by-name, hidden filter, selected paths |
-| pane/navigation | 3 | Cursor movement, enter dir + parent, enter file |
-| pane/operations | 6 | Copy file, copy dir, move, delete, rename, mkdir |
-| pane/selection | 2 | Glob matching, selection ops (toggle/all/invert) |
-| platform | 3 | File size formatting, permissions, path display |
-| preview | 3 | Binary detection, text preview, binary preview |
-| viewer | 1 | Nonexistent file handling |
-| **Total** | **27** | |
+Tests are unit tests per module plus end-to-end tests that drive real key
+sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 
 ### Phase Completion
 
@@ -298,14 +301,16 @@ ncoxide/src/
 | 4 | Space Mode + File Operations | Done |
 | 5 | Goto + Command + Config + Finder | Done |
 | 6 | Preview Mode + File Viewer | Done |
+| 7 | 0.3.0 review pass S1–S11 (`docs/review-0.3.0.md`): data-loss guard, hidden-root finder fix, panic hygiene, Helix selection semantics, dir-contents preview, background finder walk, viewport rendering, cleanup | Done |
 
 ### Public API Surface
 
-**Structs (10):**
-App, Config, GeneralConfig, ColorConfig, FinderMatch, Finder, PreviewState, PreviewLine, FileEntry, PaneState
+**Structs:** App, Config, GeneralConfig, ColorConfig, Finder, FinderMatch,
+FinderWalk, PreviewState, PreviewLine, LineIndex, LineFilter, FilterMatch,
+Search, FileEntry, PaneState
 
-**Enums (8):**
-NcError, Mode, InputKind, Action (~50 variants), SortBy, SortDirection, PaneId, Dialog
+**Enums:** NcError, Mode, InputKind, Action, SortBy, SortDirection, PaneId,
+Dialog, ConfirmAction, SearchKind
 
 ### What's Not Yet Implemented
 
@@ -325,8 +330,8 @@ These were explicitly deferred from v0.1:
 
 | Aspect | geekcommander | ncoxide |
 |--------|---------------|---------|
-| Lines | 3,626 | 3,131 |
-| Tests | 40 | 27 |
+| Lines | 3,626 | 6,909 (incl. tests) |
+| Tests | 40 | 101 |
 | TUI framework | tui 0.19 (deprecated) | ratatui 0.29 |
 | Interface | F-keys, flat dispatch | 7 modal modes, hjkl |
 | Config format | INI + TOML | TOML only |

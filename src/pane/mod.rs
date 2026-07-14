@@ -2,7 +2,7 @@ pub mod navigation;
 pub mod operations;
 pub mod selection;
 
-use std::cmp::Ordering;
+use std::cmp::Reverse;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -191,37 +191,38 @@ impl PaneState {
         Ok(())
     }
 
+    /// Sort entries: directories always first (regardless of direction),
+    /// then by the selected field. String keys are lowercased once per entry
+    /// (`sort_by_cached_key`) instead of twice per comparison.
     fn sort_entries(&mut self) {
-        let sort_by = self.sort_by;
-        let ascending = self.sort_dir == SortDirection::Ascending;
-
-        self.entries.sort_by(|a, b| {
-            // Directories always come first
-            match (a.is_dir, b.is_dir) {
-                (true, false) => return Ordering::Less,
-                (false, true) => return Ordering::Greater,
-                _ => {}
-            }
-
-            let cmp = match sort_by {
-                SortBy::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                SortBy::Size => a.size.cmp(&b.size),
-                SortBy::Date => a.modified.cmp(&b.modified),
-                SortBy::Extension => {
-                    let ext_cmp = a
-                        .extension()
-                        .to_lowercase()
-                        .cmp(&b.extension().to_lowercase());
-                    if ext_cmp == Ordering::Equal {
-                        a.name.to_lowercase().cmp(&b.name.to_lowercase())
-                    } else {
-                        ext_cmp
-                    }
-                }
-            };
-
-            if ascending { cmp } else { cmp.reverse() }
-        });
+        let asc = self.sort_dir == SortDirection::Ascending;
+        match (self.sort_by, asc) {
+            (SortBy::Name, true) => self
+                .entries
+                .sort_by_cached_key(|e| (!e.is_dir, e.name.to_lowercase())),
+            (SortBy::Name, false) => self
+                .entries
+                .sort_by_cached_key(|e| (!e.is_dir, Reverse(e.name.to_lowercase()))),
+            (SortBy::Size, true) => self.entries.sort_by_key(|e| (!e.is_dir, e.size)),
+            (SortBy::Size, false) => self.entries.sort_by_key(|e| (!e.is_dir, Reverse(e.size))),
+            (SortBy::Date, true) => self.entries.sort_by_key(|e| (!e.is_dir, e.modified)),
+            (SortBy::Date, false) => self
+                .entries
+                .sort_by_key(|e| (!e.is_dir, Reverse(e.modified))),
+            (SortBy::Extension, true) => self.entries.sort_by_cached_key(|e| {
+                (
+                    !e.is_dir,
+                    e.extension().to_lowercase(),
+                    e.name.to_lowercase(),
+                )
+            }),
+            (SortBy::Extension, false) => self.entries.sort_by_cached_key(|e| {
+                (
+                    !e.is_dir,
+                    Reverse((e.extension().to_lowercase(), e.name.to_lowercase())),
+                )
+            }),
+        }
     }
 
     /// Current entry under cursor, if any.
@@ -264,7 +265,7 @@ mod tests {
 
     #[test]
     fn test_pane_state_new() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_pane");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_pane_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
         fs::write(tmp.join("file_a.txt"), "hello").unwrap();
         fs::write(tmp.join("file_b.rs"), "world").unwrap();
@@ -280,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_sort_by_name() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_sort");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_sort_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
         fs::write(tmp.join("zeta.txt"), "").unwrap();
         fs::write(tmp.join("alpha.txt"), "").unwrap();
@@ -296,7 +297,7 @@ mod tests {
 
     #[test]
     fn test_hidden_files_filtered() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_hidden");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_hidden_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
         fs::write(tmp.join(".hidden"), "").unwrap();
         fs::write(tmp.join("visible.txt"), "").unwrap();
@@ -310,7 +311,7 @@ mod tests {
 
     #[test]
     fn test_selected_paths_default() {
-        let tmp = std::env::temp_dir().join("ncoxide_test_sel");
+        let tmp = std::env::temp_dir().join(format!("ncoxide_test_sel_{}", std::process::id()));
         let _ = fs::create_dir_all(&tmp);
         fs::write(tmp.join("file.txt"), "").unwrap();
 

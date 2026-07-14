@@ -188,14 +188,23 @@ impl PreviewState {
         matches!(self.kind, PreviewKind::Windowed { .. })
     }
 
-    /// Feed progress from a background [`LineCounter`] into the status display.
+    /// Feed progress from a background [`LineIndex`] into the status display.
     pub fn set_line_count(&mut self, count: u64, complete: bool) {
-        if let PreviewKind::Windowed { count: state, .. } = &mut self.kind {
+        if let PreviewKind::Windowed {
+            window,
+            count: state,
+        } = &mut self.kind
+        {
             *state = if complete {
                 CountState::Total(count)
             } else {
                 CountState::Counting(count)
             };
+            if complete {
+                // A completed scan lets a bottom-jumped view recover its
+                // absolute line number.
+                window.recover_line_from_total(count);
+            }
         }
     }
 
@@ -235,7 +244,12 @@ impl PreviewState {
             PreviewKind::Loaded { lines, scroll } => {
                 *scroll = (*scroll + amount).min(lines.len().saturating_sub(1));
             }
-            PreviewKind::Windowed { window, .. } => window.scroll_down(amount, height),
+            PreviewKind::Windowed { window, count } => {
+                window.scroll_down(amount, height);
+                if let CountState::Total(t) = count {
+                    window.recover_line_from_total(*t);
+                }
+            }
             PreviewKind::Empty => {}
         }
     }
@@ -253,7 +267,12 @@ impl PreviewState {
             PreviewKind::Loaded { lines, scroll } => {
                 *scroll = lines.len().saturating_sub(height.max(1));
             }
-            PreviewKind::Windowed { window, .. } => window.scroll_to_bottom(height),
+            PreviewKind::Windowed { window, count } => {
+                window.scroll_to_bottom(height);
+                if let CountState::Total(t) = count {
+                    window.recover_line_from_total(*t);
+                }
+            }
             PreviewKind::Empty => {}
         }
     }
@@ -695,6 +714,70 @@ mod tests {
             .map(|s| s.content.to_string())
             .collect();
         assert_eq!(hl, "world", "only the match should be highlighted");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_search_wraps_in_windowed_files() {
+        // Helix alignment: windowed search wraps at both ends, like the
+        // loaded-preview search always has.
+        let dir = tmp("search_wrap");
+        let path = dir.join("big.log");
+        let mut body = String::new();
+        for i in 0..200 {
+            match i {
+                4 => body.push_str("early NEEDLE here\n"),
+                150 => body.push_str("late NEEDLE here\n"),
+                _ => body.push_str(&format!("noise {i}\n")),
+            }
+        }
+        fs::write(&path, &body).unwrap();
+        let mut state = load_preview_with_threshold(&path, 16); // windowed
+        state.set_search("needle", SearchKind::Literal).unwrap();
+
+        // Forward from line 160 (no match below): wraps to line 5.
+        state.goto_line(160, (0, 1));
+        assert!(state.search_next(true));
+        assert!(rendered(&state, 1)[0].contains("early NEEDLE"));
+        assert!(
+            state.status_text().starts_with("line 5"),
+            "{}",
+            state.status_text()
+        );
+
+        // Backward from line 5 (no match above): wraps to the last match.
+        assert!(state.search_next(false));
+        assert!(rendered(&state, 1)[0].contains("late NEEDLE"));
+        assert!(
+            state.status_text().starts_with("line 151"),
+            "{}",
+            state.status_text()
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_bottom_keeps_line_number_once_total_known() {
+        // scroll_to_bottom can't know the absolute line without a scan; once
+        // the background count reports a total, the position is recovered
+        // instead of the status losing its line number.
+        let dir = tmp("bottom_line");
+        let path = dir.join("f.log");
+        let body: String = (0..300).map(|i| format!("row {i}\n")).collect();
+        fs::write(&path, &body).unwrap();
+
+        let mut state = load_preview_with_threshold(&path, 16); // windowed
+        state.set_line_count(300, true); // as the finished LineIndex reports
+        state.scroll_to_bottom(10);
+
+        assert!(rendered(&state, 1)[0].contains("row 290"));
+        assert!(
+            state.status_text().starts_with("line 291/300"),
+            "{}",
+            state.status_text()
+        );
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -412,7 +412,6 @@ impl App {
         match action {
             Action::None => {}
             Action::Quit => self.should_quit = true,
-            Action::Redraw => {}
 
             // Navigation
             Action::CursorUp => self.active_pane_mut().cursor_up(),
@@ -496,13 +495,6 @@ impl App {
             Action::Rename(ref new_name) => self.do_rename(new_name),
             Action::Mkdir(ref name) => self.do_mkdir(name),
             Action::EditFile => self.edit_file(),
-            Action::OpenFile => {
-                if let Some(entry) = self.active_pane_state().current_entry().cloned()
-                    && !entry.is_dir
-                {
-                    self.open_file(&entry.path);
-                }
-            }
 
             // Goto
             Action::GotoHome => {
@@ -566,11 +558,9 @@ impl App {
                 self.mode = Mode::Normal;
             }
 
-            // Finder mode
+            // Finder mode (cursor/selection keys are handled directly in
+            // handle_finder_key)
             Action::EnterFinder => self.enter_finder(),
-            Action::FinderSelect(_) | Action::FinderCursorUp | Action::FinderCursorDown => {
-                // Handled directly in handle_finder_key
-            }
 
             // Preview mode
             Action::TogglePreview => self.toggle_preview(),

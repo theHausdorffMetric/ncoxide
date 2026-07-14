@@ -166,37 +166,61 @@ impl FileWindow {
         self.refill();
     }
 
-    /// Find the next/previous line satisfying `matches`, starting from the line
-    /// after/before the current top, and reposition the view there. Returns
-    /// `true` if a match was found. Streams one line at a time (bounded memory).
+    /// Find the next/previous line satisfying `matches`, starting from the
+    /// line after/before the current top and wrapping at the ends (matching
+    /// the loaded-preview search and Helix), then reposition the view there.
+    /// Returns `true` if a match was found. Streams one line at a time
+    /// (bounded memory).
     pub fn search(&mut self, forward: bool, matches: impl Fn(&str) -> bool) -> bool {
+        let start = self.top_offset;
         if forward {
-            // Start just past the current top line.
-            let Ok((top, mut off, top_eof)) = read_forward(&mut self.file, self.top_offset, 1)
-            else {
+            // Phase 1: from the line after the current top to EOF.
+            let Ok((top, mut off, top_eof)) = read_forward(&mut self.file, start, 1) else {
                 return false;
             };
-            if top.is_empty() || top_eof {
+            if top.is_empty() {
                 return false;
             }
             let mut line_no = self.top_line.map(|l| l + 1);
+            if !top_eof {
+                loop {
+                    let Ok((ls, next, eof)) = read_forward(&mut self.file, off, 1) else {
+                        return false;
+                    };
+                    let Some(text) = ls.first() else { break };
+                    if matches(text) {
+                        self.seek_to(off, line_no);
+                        return true;
+                    }
+                    if eof {
+                        break;
+                    }
+                    off = next;
+                    line_no = line_no.map(|l| l + 1);
+                }
+            }
+            // Phase 2 (wrap): from the start of the file up to and including
+            // the current top line. Line numbers are exact here.
+            let mut off2 = 0u64;
+            let mut line2 = 0u64;
             loop {
-                let Ok((ls, next, eof)) = read_forward(&mut self.file, off, 1) else {
+                let Ok((ls, next, eof)) = read_forward(&mut self.file, off2, 1) else {
                     return false;
                 };
                 let Some(text) = ls.first() else { break };
                 if matches(text) {
-                    self.seek_to(off, line_no);
+                    self.seek_to(off2, Some(line2));
                     return true;
                 }
-                if eof {
+                if off2 >= start || eof {
                     break;
                 }
-                off = next;
-                line_no = line_no.map(|l| l + 1);
+                off2 = next;
+                line2 += 1;
             }
             false
         } else {
+            // Phase 1: upward from the line before the current top.
             let mut off = self.top_offset;
             let mut line_no = self.top_line;
             while off > 0 {
@@ -213,7 +237,37 @@ impl FileWindow {
                     return true;
                 }
             }
+            // Phase 2 (wrap): the match closest to EOF at or after the
+            // current top — scan forward remembering the last hit (line
+            // numbers stay exact whenever the top's is known).
+            let mut best: Option<(u64, Option<u64>)> = None;
+            let mut off2 = start;
+            let mut line2 = self.top_line;
+            while let Ok((ls, next, eof)) = read_forward(&mut self.file, off2, 1) {
+                let Some(text) = ls.first() else { break };
+                if matches(text) {
+                    best = Some((off2, line2));
+                }
+                if eof {
+                    break;
+                }
+                off2 = next;
+                line2 = line2.map(|l| l + 1);
+            }
+            if let Some((off, line)) = best {
+                self.seek_to(off, line);
+                return true;
+            }
             false
+        }
+    }
+
+    /// Recover the absolute line number after a jump that lost it (e.g.
+    /// `scroll_to_bottom`), once the file's total line count is known: while
+    /// the buffer reaches EOF, the top line is `total - buffered`.
+    pub fn recover_line_from_total(&mut self, total: u64) {
+        if self.top_line.is_none() && self.at_eof {
+            self.top_line = Some(total.saturating_sub(self.buf.len() as u64));
         }
     }
 
