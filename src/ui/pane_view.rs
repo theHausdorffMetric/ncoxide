@@ -1,7 +1,7 @@
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::widgets::{Block, Borders, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 
 use crate::app::App;
 use crate::pane::{PaneId, PaneState};
@@ -111,11 +111,25 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Th
             .add_modifier(Modifier::BOLD),
     );
 
-    // Build rows from entries
+    // Build rows for the visible slice only (R8): a directory with tens of
+    // thousands of entries must not cost a Row (with jiff formatting and
+    // several Strings) per entry per frame. The event loop keeps
+    // `scroll_offset` tracking the cursor via `adjust_scroll`; the clamp
+    // below keeps standalone renders (tests) correct too.
+    let visible = area.height.saturating_sub(3) as usize; // borders + header
+    let mut offset = pane.scroll_offset.min(pane.entries.len().saturating_sub(1));
+    if pane.cursor < offset {
+        offset = pane.cursor;
+    } else if visible > 0 && pane.cursor >= offset + visible {
+        offset = pane.cursor + 1 - visible;
+    }
+
     let rows: Vec<Row> = pane
         .entries
         .iter()
         .enumerate()
+        .skip(offset)
+        .take(visible)
         .map(|(i, entry)| {
             let is_selected = pane.selected.get(i).copied().unwrap_or(false);
             let is_cursor = i == pane.cursor;
@@ -178,15 +192,8 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Th
         Constraint::Length(10),
     ];
 
-    let table = Table::new(rows, widths)
-        .header(header)
-        .block(block)
-        .row_highlight_style(Style::default());
-
-    let mut state = TableState::default();
-    if is_active && pane.cursor < pane.entries.len() {
-        state.select(Some(pane.cursor));
-    }
-
-    f.render_stateful_widget(table, area, &mut state);
+    // Cursor highlighting is done via row styles above; scrolling via the
+    // slice — no TableState needed.
+    let table = Table::new(rows, widths).header(header).block(block);
+    f.render_widget(table, area);
 }

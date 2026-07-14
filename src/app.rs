@@ -13,7 +13,7 @@ use ratatui::backend::CrosstermBackend;
 
 use crate::config::Config;
 use crate::error::Result;
-use crate::finder::{Finder, FinderMatch};
+use crate::finder::{Finder, FinderMatch, FinderWalk};
 use crate::mode::normal::NormalState;
 use crate::mode::{Action, InputKind, Mode};
 use crate::pane::operations;
@@ -42,6 +42,11 @@ pub struct App {
     pub preview_state: PreviewState,
     pub config: Config,
     finder: Finder,
+    /// Background walk for the current finder session; keystrokes re-score
+    /// its collected list instead of re-walking the tree (R7).
+    finder_walk: Option<FinderWalk>,
+    /// Walk progress at the last scoring pass, to avoid redundant re-scores.
+    finder_seen: (usize, bool),
     page_size: usize,
     /// A request to hand the terminal to an external program (pager or editor).
     /// Run by the event loop, which owns the `Terminal` and can restore/redraw
@@ -88,6 +93,8 @@ impl App {
             preview_state: PreviewState::default(),
             config,
             finder: Finder::new(),
+            finder_walk: None,
+            finder_seen: (0, false),
             page_size: 20,
             pending_external: None,
         }
@@ -196,25 +203,48 @@ impl App {
     }
 
     fn event_loop(&mut self, terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
+        // Draw only when state may have changed (R8): key events, resizes,
+        // finder-walk progress, and external-program returns set the flag.
+        // Idle iterations are a bare poll timeout with no render work.
+        let mut dirty = true;
         loop {
-            // Update page size from terminal height
-            let area = terminal.size().map_err(crate::error::NcError::Io)?;
-            self.page_size = area.height.saturating_sub(4) as usize; // borders + header + status
+            if dirty {
+                // Update page size from terminal height
+                let area = terminal.size().map_err(crate::error::NcError::Io)?;
+                self.page_size = area.height.saturating_sub(4) as usize; // borders + header + status
 
-            terminal
-                .draw(|f| ui::draw(f, self))
-                .map_err(crate::error::NcError::Io)?;
+                // Keep each pane's viewport slice tracking its cursor; the
+                // renderer draws only entries[scroll_offset..][..visible].
+                let ps = self.page_size;
+                self.left_pane.adjust_scroll(ps);
+                self.right_pane.adjust_scroll(ps);
+
+                terminal
+                    .draw(|f| ui::draw(f, self))
+                    .map_err(crate::error::NcError::Io)?;
+                dirty = false;
+            }
 
             if self.should_quit {
                 return Ok(());
             }
 
-            // Poll for events (50ms timeout for responsive UI)
-            if event::poll(Duration::from_millis(50)).map_err(crate::error::NcError::Io)?
-                && let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)?
-                && key.kind == crossterm::event::KeyEventKind::Press
-            {
-                self.handle_key(key);
+            // Poll for events (50ms timeout so background progress surfaces)
+            if event::poll(Duration::from_millis(50)).map_err(crate::error::NcError::Io)? {
+                match event::read().map_err(crate::error::NcError::Io)? {
+                    Event::Key(key) if key.kind == crossterm::event::KeyEventKind::Press => {
+                        self.handle_key(key);
+                        dirty = true;
+                    }
+                    Event::Resize(..) => dirty = true,
+                    _ => {}
+                }
+            }
+
+            // Streaming finder results: re-score when the background walk
+            // made progress since the last pass.
+            if self.refresh_finder_progress() {
+                dirty = true;
             }
 
             // Hand the terminal to an external program (pager/editor) if
@@ -223,6 +253,7 @@ impl App {
             // now-blank screen, leaving stale borders/rows.
             if let Some(pending) = self.pending_external.take() {
                 self.run_external(terminal, pending)?;
+                dirty = true;
             }
         }
     }
@@ -877,6 +908,7 @@ impl App {
             crossterm::event::KeyCode::Esc => {
                 self.finder_results.clear();
                 self.finder_cursor = 0;
+                self.finder_walk = None; // stops the background walk
                 Action::ExitToNormal
             }
             crossterm::event::KeyCode::Enter => {
@@ -884,6 +916,7 @@ impl App {
                     let path = result.path.clone();
                     self.finder_results.clear();
                     self.finder_cursor = 0;
+                    self.finder_walk = None; // stops the background walk
                     self.mode = Mode::Normal;
                     if path.is_dir() {
                         let result = self.active_pane_mut().goto(path);
@@ -978,12 +1011,40 @@ impl App {
         self.input_buffer.clear();
         self.finder_results.clear();
         self.finder_cursor = 0;
+        // One walk per finder session; keystrokes re-score its list (R7).
+        self.finder_walk = Some(FinderWalk::spawn(self.active_pane_state().cwd.clone()));
+        self.finder_seen = (0, false);
     }
 
     fn update_finder_results(&mut self) {
-        let cwd = self.active_pane_state().cwd.clone();
-        self.finder_results = self.finder.find(&cwd, &self.input_buffer, 20);
+        let Some(walk) = &self.finder_walk else {
+            self.finder_results.clear();
+            self.finder_cursor = 0;
+            return;
+        };
+        self.finder_seen = (walk.count(), walk.is_done());
+        let finder = &mut self.finder;
+        let query = &self.input_buffer;
+        self.finder_results = walk.with_paths(|items| finder.find_in(items, query, 20));
         self.finder_cursor = 0;
+    }
+
+    /// Re-score the finder while its background walk is still collecting, so
+    /// results stream in without keystrokes. Returns true when the visible
+    /// results may have changed (the caller redraws).
+    fn refresh_finder_progress(&mut self) -> bool {
+        if self.mode != Mode::Finder || self.input_buffer.is_empty() {
+            return false;
+        }
+        let Some(walk) = &self.finder_walk else {
+            return false;
+        };
+        let progress = (walk.count(), walk.is_done());
+        if progress == self.finder_seen {
+            return false;
+        }
+        self.update_finder_results();
+        true
     }
 }
 
@@ -1465,6 +1526,65 @@ mod integration {
             text.contains("added.txt"),
             "preview must re-read the dir after a file op: {text}"
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_finder_scores_background_walk_results() {
+        // R7: the finder walks once in the background per session; keystrokes
+        // and walk progress re-score the cached list.
+        let (dir, mut app) = app_with("finder_bg", &["match_me.txt", "other.log"]);
+        app.handle_key(key(' '));
+        app.handle_key(key('f'));
+        assert_eq!(app.mode, Mode::Finder);
+        let walk = app.finder_walk.as_ref().expect("walk spawned on open");
+        for _ in 0..100_000 {
+            if walk.is_done() {
+                break;
+            }
+            std::thread::yield_now();
+        }
+        assert!(app.finder_walk.as_ref().unwrap().is_done());
+
+        type_str(&mut app, "match");
+        assert_eq!(app.finder_results.len(), 1);
+        assert!(app.finder_results[0].display_name.contains("match_me"));
+
+        // Esc tears the walk down.
+        app.handle_key(code(KeyCode::Esc));
+        assert!(app.finder_walk.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_pane_scrolls_to_keep_cursor_visible() {
+        // R8: only the visible slice is rendered; jumping to the bottom of a
+        // long listing must scroll the viewport, not draw an off-screen
+        // cursor.
+        let files: Vec<String> = (0..60).map(|i| format!("file{i:02}.txt")).collect();
+        let refs: Vec<&str> = files.iter().map(String::as_str).collect();
+        let (dir, mut app) = app_with("scroll", &refs);
+
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("file00.txt"), "top of list visible");
+        assert!(!screen.contains("file59.txt"), "bottom not yet visible");
+
+        app.handle_key(key('G')); // jump to bottom
+        app.left_pane.adjust_scroll(20); // what the event loop does pre-draw
+        let screen = render(&app, 80, 24);
+        // Only the active (left) pane scrolled; the right pane shows the same
+        // dir unscrolled, so restrict assertions to the left half.
+        let left_half: String = screen
+            .lines()
+            .map(|l| l.chars().take(40).collect::<String>() + "\n")
+            .collect();
+        assert!(
+            left_half.contains("file59.txt"),
+            "cursor row scrolled into view: {left_half}"
+        );
+        assert!(!left_half.contains("file00.txt"), "top scrolled out");
 
         let _ = fs::remove_dir_all(&dir);
     }
