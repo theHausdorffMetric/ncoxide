@@ -2,7 +2,7 @@
 
 Full-source review (~5.6k LOC) at commit `84bf937`. Findings R1–R22 below,
 grouped into commit-sized implementation steps S1–S10 at the end. Work state is
-tracked in the monorepo's mindtask (`.mindtask.json`, concept 17 "ncoxide") —
+tracked in the monorepo's mindtask (`.mindtask.json`, concept "ncoxide") —
 one task per step.
 
 **Workflow per step:** implement → add/extend the listed regression tests →
