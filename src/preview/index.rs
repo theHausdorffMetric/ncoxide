@@ -101,7 +101,7 @@ fn scan(
                 for (i, &b) in buf[..n].iter().enumerate() {
                     if b == b'\n' {
                         newlines += 1;
-                        if newlines % STRIDE == 0 {
+                        if newlines.is_multiple_of(STRIDE) {
                             // Start of the next line (= line `newlines`, 0-based).
                             offsets.lock().unwrap().push(pos + i as u64 + 1);
                         }

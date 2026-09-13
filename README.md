@@ -93,7 +93,7 @@ ncoxide --left ~/projects --right /tmp
 ncoxide is a personal project in early development. The core features listed
 above are implemented and working, but the API and keybindings may change at any
 time. Bug reports and feedback are welcome on the
-[issue tracker](https://todo.sr.ht/~danprobst/ncoxide).
+[issue tracker](https://github.com/theHausdorffMetric/ncoxide/issues).
 
 ## License
 

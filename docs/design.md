@@ -273,9 +273,9 @@ ncoxide/src/
 | `cargo test` | **101 passed**, 0 failed (+2 `--ignored` large-file proofs) |
 | Edition | Rust 2024 |
 | Location | `~/dev/ideas/sourcehut/ncoxide/` |
-| Origin | `git@git.sr.ht:~dpclaude/ncoxide` (dev) |
-| Upstream | `git@git.sr.ht:~danprobst/ncoxide` (release) |
-| Tracker | `~danprobst/ncoxide-dev` (todo.sr.ht, id: 19112) |
+| Origin | `https://github.com/theHausdorffMetric/ncoxide` (dev and release in one repo since 2026-09-13) |
+| Upstream | — (the sourcehut release mirror was retired 2026-09-13) |
+| Tracker | GitHub issues on the repo (todo.sr.ht `~danprobst/ncoxide-dev` retired) |
 
 ### Code Statistics
 

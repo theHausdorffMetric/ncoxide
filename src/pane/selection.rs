@@ -10,16 +10,12 @@ impl PaneState {
 
     /// Select all visible entries.
     pub fn select_all(&mut self) {
-        for s in &mut self.selected {
-            *s = true;
-        }
+        self.selected.fill(true);
     }
 
     /// Deselect all.
     pub fn deselect_all(&mut self) {
-        for s in &mut self.selected {
-            *s = false;
-        }
+        self.selected.fill(false);
     }
 
     /// Invert selection.
