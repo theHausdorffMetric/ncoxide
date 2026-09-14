@@ -1,6 +1,9 @@
 # Image preview via ratatui-image — implementation plan
 
-Status: plan, 2026-09-14 (mindtask task 166). Nothing implemented yet.
+Status: implemented on branch `image-preview`, 2026-09-14 (mindtask task 166):
+phases 0–3 below are code-complete with the gate green (fmt, clippy
+`-D warnings`, 120 tests, audit). What is left is the manual QA matrix at
+the end of this file, which needs the real terminals.
 
 Goal: when the cursor is on an image file, the preview pane (and `Space v`)
 shows the picture instead of `[Binary file]`, using the best graphics
@@ -116,6 +119,22 @@ as the single preview model.
    bullet + config table, design.md module list, then the manual QA matrix
    (alacritty, WezTerm local, WezTerm over SSH, zellij on both) recorded in
    this file. Release as 0.5.0.
+
+## Manual QA matrix (pending)
+
+Run `ncoxide --probe-terminal`, then `ncoxide` with `p` on a photo, in each
+row; record the result here. Expected values from the terminal matrix above.
+
+| Setup | Probe result | Pane preview | `Space v` | Notes |
+|---|---|---|---|---|
+| Alacritty 0.17, local | halfblocks | | | |
+| WezTerm, local | iTerm2 | | | |
+| WezTerm → SSH → workstation | sixel (kitty if enabled) | | | try `NCOXIDE_IMAGES=iterm2` |
+| WezTerm → SSH → zellij 0.45 | sixel or kitty | | | env hints hidden; check `image_font_size` if halfblocks |
+| Alacritty → SSH → zellij 0.45 | halfblocks | | | |
+
+Also worth a look in each: overlays (`?`, Space menu) over a picture, a
+resize while a picture is up, `Space e` on the image and back.
 
 ## Out of scope (file as follow-ups if wanted)
 

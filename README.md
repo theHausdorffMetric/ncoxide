@@ -17,6 +17,10 @@ A modal dual-pane file commander for the terminal, inspired by
   files; large files and logs stream through a windowed reader with bounded
   memory (scrolls multi-GB files without loading them); directories preview
   their contents as a listing
+- **Image preview** -- PNG, JPEG, GIF, WebP, BMP, ICO, TIFF and QOI files draw
+  in the preview pane and the viewer through the Sixel, Kitty or iTerm2
+  graphics protocol (unicode half-blocks elsewhere); decoding runs off the UI
+  thread. `ncoxide --probe-terminal` reports what your terminal supports
 - **File viewer** -- full-screen pager (Space then `v`) with in-file search
   (`/`, literal or `Ctrl-R` regex, `n`/`N` to cycle matches), goto-line
   (`<N>G`), and fuzzy line-filter (`&`, powered by nucleo-matcher)
@@ -34,7 +38,7 @@ A modal dual-pane file commander for the terminal, inspired by
 
 ## Installation
 
-Requires **Rust 1.85+** (edition 2024).
+Requires **Rust 1.98+** (edition 2024).
 
 ```
 cargo install ncoxide
@@ -48,7 +52,8 @@ ncoxide [OPTIONS]
 Options:
   -l, --left <DIR>     Left pane starting directory
   -r, --right <DIR>    Right pane starting directory
-      --log <FILE>     Log file path [default: /tmp/ncoxide.log]
+      --log <FILE>     Log file path [default: $XDG_STATE_HOME/ncoxide/ncoxide.log]
+      --probe-terminal Report the terminal's image protocol and cell size, then exit
   -h, --help           Print help
   -V, --version        Print version
 ```
@@ -87,6 +92,38 @@ ncoxide --left ~/projects --right /tmp
 | `Space` `v` | View file (pager) |
 | `?` | Help screen |
 | `q` | Quit |
+
+## Configuration
+
+`~/.config/ncoxide/config.toml` (all keys optional):
+
+```toml
+bookmarks = ["/home/me/projects"]
+
+[general]
+show_hidden = false
+sort_by = "name"          # name | size | date | ext
+sort_ascending = true
+editor = "hx"             # default: $EDITOR, then vi
+
+[colors]
+directory = "blue"        # names or "#rrggbb"
+
+[preview]
+images = "auto"           # auto | off | halfblocks | sixel | kitty | iterm2
+image_font_size = [10, 20] # cell size in px, only if the terminal does not report one
+image_max_bytes = 67108864 # larger image files show their header facts only
+```
+
+`NCOXIDE_IMAGES=sixel` (any `images` value) overrides the config for one
+shell, which is handy when the same config serves a local terminal and an
+SSH session.
+
+Terminal notes: WezTerm uses iTerm2 locally but over SSH needs
+`images = "iterm2"` (the env hints do not cross SSH); Alacritty has no
+graphics protocol and gets half-blocks; zellij 0.45+ forwards Kitty and
+Sixel but never iTerm2. `ncoxide --probe-terminal` shows what was detected
+and why. Details in `docs/image-preview-plan.md`.
 
 ## Project status
 

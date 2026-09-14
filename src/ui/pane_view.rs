@@ -1,26 +1,24 @@
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
+use ratatui_image::Image;
 
 use crate::app::App;
 use crate::pane::{PaneId, PaneState};
 use crate::platform;
 use crate::preview;
 use crate::ui::Theme;
+use crate::ui::layout::Regions;
 
-/// Draw both panes side-by-side.
-pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(area);
-
+/// Draw both panes side-by-side. `show_image` is false while an overlay is
+/// up (see `ui::draw`).
+pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, regions: &Regions, show_image: bool) {
     if app.preview_active {
         // Active pane shows file list, inactive pane shows preview
         let (file_chunk, preview_chunk) = match app.active_pane {
-            PaneId::Left => (chunks[0], chunks[1]),
-            PaneId::Right => (chunks[1], chunks[0]),
+            PaneId::Left => (regions.left, regions.right),
+            PaneId::Right => (regions.right, regions.left),
         };
         draw_single_pane(
             f,
@@ -35,6 +33,7 @@ pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             app.preview_focused,
             theme,
             preview_chunk,
+            show_image,
         );
     } else {
         draw_single_pane(
@@ -42,14 +41,14 @@ pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, area: Rect) {
             &app.left_pane,
             app.active_pane == PaneId::Left,
             theme,
-            chunks[0],
+            regions.left,
         );
         draw_single_pane(
             f,
             &app.right_pane,
             app.active_pane == PaneId::Right,
             theme,
-            chunks[1],
+            regions.right,
         );
     }
 }
@@ -60,6 +59,7 @@ fn draw_preview_pane(
     is_focused: bool,
     theme: &Theme,
     area: Rect,
+    show_image: bool,
 ) {
     let name = state
         .path
@@ -85,8 +85,27 @@ fn draw_preview_pane(
         .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
-    let visible_height = inner.height as usize;
 
+    // A picture encoded for exactly this inner size is drawn as pixels;
+    // anything else (pending, stale size, overlay up) shows the text lines.
+    if show_image
+        && let Some(enc) = state.encoded_image()
+        && enc.target == inner.as_size()
+    {
+        f.render_widget(block, area);
+        // Aspect-fit leaves slack on one axis: centre the picture in it.
+        let size = enc.protocol.size();
+        let rect = Rect::new(
+            inner.x + inner.width.saturating_sub(size.width) / 2,
+            inner.y + inner.height.saturating_sub(size.height) / 2,
+            size.width.min(inner.width),
+            size.height.min(inner.height),
+        );
+        f.render_widget(Image::new(&enc.protocol), rect);
+        return;
+    }
+
+    let visible_height = inner.height as usize;
     let para = Paragraph::new(state.render(visible_height)).block(block);
     f.render_widget(para, area);
 }

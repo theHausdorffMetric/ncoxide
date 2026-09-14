@@ -192,6 +192,14 @@ registers; the implementation deliberately went dual-pane-native instead.)
   external edits invalidate it
 - Focus on preview pane (Tab): Up/Down scrolls content
 - `p` again restores inactive pane to directory listing
+- Image files (png, jpeg, gif, webp, bmp, ico, tiff, qoi) show their header
+  facts at once and the picture as soon as a worker thread has decoded and
+  encoded it for the pane's cell size (Sixel / Kitty / iTerm2, half-blocks
+  as the fallback); `Space v` on an image opens it full-screen. The
+  protocol comes from a one-time terminal probe in `App::run`, overridable
+  in `[preview]` / `NCOXIDE_IMAGES`; `--probe-terminal` explains the result.
+  While an overlay is up the picture yields to its text lines (pixels are
+  not in ratatui's buffer). See `docs/image-preview-plan.md`.
 
 ### Module Structure
 
@@ -203,7 +211,14 @@ ncoxide/src/
 ├── config.rs            — TOML config (~/.config/ncoxide/config.toml)
 ├── app.rs               — App struct, event loop, mode dispatch, action handlers
 ├── finder.rs            — Fuzzy file finder (nucleo-matcher)
-├── preview.rs           — Syntax-highlighted preview (syntect)
+├── graphics.rs          — Image protocol probe (ratatui-image Picker), zellij/SSH rules, --probe-terminal report
+├── preview/
+│   ├── mod.rs           — PreviewState (Loaded / Windowed / Image kinds), loaders
+│   ├── highlight.rs     — syntect highlighting
+│   ├── window.rs        — windowed reader for large files
+│   ├── index.rs         — background line index
+│   ├── search.rs, filter.rs — in-file search, fuzzy line filter
+│   └── image.rs         — image probe, limited decode, decode/encode worker
 ├── viewer.rs            — Full-screen file viewer
 ├── platform.rs          — Unix helpers (disk space, permissions, paths)
 ├── mode/
@@ -303,6 +318,7 @@ sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 | 5 | Goto + Command + Config + Finder | Done |
 | 6 | Preview Mode + File Viewer | Done |
 | 7 | 0.3.0 review pass S1–S11 (`docs/review-0.3.0.md`): data-loss guard, hidden-root finder fix, panic hygiene, Helix selection semantics, dir-contents preview, background finder walk, viewport rendering, cleanup | Done |
+| 8 | Image preview via ratatui-image (`docs/image-preview-plan.md`): ratatui 0.30, terminal probe + config + `--probe-terminal`, pane preview with off-thread decode, full-screen image view | Done (branch `image-preview`, 2026-09-14) |
 
 ### Public API Surface
 

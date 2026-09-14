@@ -1,10 +1,10 @@
 pub mod dialog;
 pub mod help;
+pub mod layout;
 pub mod pane_view;
 pub mod status_line;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Direction, Layout};
 use ratatui::style::Color;
 
 use crate::app::App;
@@ -44,20 +44,24 @@ impl Theme {
 /// Top-level draw function: lays out panes + status line.
 pub fn draw(f: &mut Frame, app: &App) {
     let theme = Theme::from_config(&app.config.colors);
+    let regions = layout::regions(f.area());
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(3),    // panes area
-            Constraint::Length(1), // status line
-        ])
-        .split(f.area());
+    // Pixels drawn by a graphics protocol are not in ratatui's buffer, so an
+    // overlay painted over them would leave the picture showing through (or
+    // stale pixels behind it). While any overlay is up the preview pane
+    // falls back to its text lines; the picture returns with the next frame.
+    let overlay = app.show_help
+        || app.dialog.is_some()
+        || matches!(
+            app.mode,
+            crate::mode::Mode::Space | crate::mode::Mode::Finder
+        );
 
     // Draw dual panes
-    pane_view::draw_panes(f, app, &theme, chunks[0]);
+    pane_view::draw_panes(f, app, &theme, &regions, !overlay);
 
     // Draw status line
-    status_line::draw_status_line(f, app, chunks[1]);
+    status_line::draw_status_line(f, app, regions.status);
 
     // Draw overlays (help, dialogs, space menu, finder)
     if app.show_help {

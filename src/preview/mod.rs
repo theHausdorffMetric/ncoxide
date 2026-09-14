@@ -1,5 +1,6 @@
 mod filter;
 mod highlight;
+pub mod image;
 mod index;
 mod search;
 mod window;
@@ -8,10 +9,12 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use ratatui::layout::Size;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub use filter::{FilterMatch, LineFilter};
+pub use image::{EncodedImage, ImageJob, ImageMeta, ImageResult, ImageWorker};
 pub use index::LineIndex;
 pub use search::{Search, SearchKind};
 use window::FileWindow;
@@ -50,6 +53,18 @@ enum PreviewKind {
     Windowed {
         window: FileWindow,
         count: CountState,
+    },
+    /// Image file: header facts at once, the picture once the worker has
+    /// encoded it for the pane's current cell size (see `image.rs`).
+    Image {
+        meta: ImageMeta,
+        encoded: Option<EncodedImage>,
+        /// Outstanding request `(generation, target)`; results for any other
+        /// generation are stale and dropped.
+        requested: Option<(u64, Size)>,
+        /// Why there is no picture (images off, too large, decode error).
+        /// Once set, no further requests are made.
+        note: Option<String>,
     },
 }
 
@@ -117,6 +132,30 @@ impl PreviewState {
 
         match &self.kind {
             PreviewKind::Empty => Vec::new(),
+            PreviewKind::Image {
+                meta,
+                encoded,
+                requested,
+                note,
+            } => {
+                // No gutter: these are facts, not file lines. The picture
+                // itself is drawn by the `Image` widget, not through here.
+                let mut lines = vec![Line::from(Span::styled(
+                    meta.summary(),
+                    Style::default().fg(Color::Cyan),
+                ))];
+                let (text, color) = match (note, requested, encoded) {
+                    (Some(n), _, _) => (n.clone(), Color::Red),
+                    (None, Some(_), _) | (None, None, None) => {
+                        ("decoding…".to_string(), Color::DarkGray)
+                    }
+                    (None, None, Some(_)) => (String::new(), Color::DarkGray),
+                };
+                if !text.is_empty() {
+                    lines.push(Line::from(Span::styled(text, Style::default().fg(color))));
+                }
+                lines.into_iter().take(height).collect()
+            }
             PreviewKind::Loaded { lines, scroll } => lines
                 .iter()
                 .enumerate()
@@ -188,6 +227,77 @@ impl PreviewState {
         matches!(self.kind, PreviewKind::Windowed { .. })
     }
 
+    /// Header facts when the preview is an image.
+    pub fn image_meta(&self) -> Option<&ImageMeta> {
+        match &self.kind {
+            PreviewKind::Image { meta, .. } => Some(meta),
+            _ => None,
+        }
+    }
+
+    /// The encoded picture, once the worker has delivered one.
+    pub fn encoded_image(&self) -> Option<&EncodedImage> {
+        match &self.kind {
+            PreviewKind::Image { encoded, .. } => encoded.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// Whether an encode should be requested for `target` cells: an image
+    /// with no payload for exactly that size, nothing in flight, no note.
+    pub fn image_wants_encode(&self, target: Size) -> bool {
+        match &self.kind {
+            PreviewKind::Image {
+                encoded,
+                requested,
+                note,
+                ..
+            } => {
+                note.is_none()
+                    && requested.is_none()
+                    && encoded.as_ref().is_none_or(|e| e.target != target)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn mark_image_requested(&mut self, generation: u64, target: Size) {
+        if let PreviewKind::Image { requested, .. } = &mut self.kind {
+            *requested = Some((generation, target));
+        }
+    }
+
+    /// Record why no picture will be shown; stops further requests.
+    pub fn set_image_note(&mut self, text: String) {
+        if let PreviewKind::Image { note, .. } = &mut self.kind {
+            *note = Some(text);
+        }
+    }
+
+    /// Apply a worker result. Ignored unless it answers the outstanding
+    /// request (older generations are stale). Returns true when the view
+    /// changed.
+    pub fn apply_image_result(&mut self, result: ImageResult) -> bool {
+        let PreviewKind::Image {
+            encoded,
+            requested,
+            note,
+            ..
+        } = &mut self.kind
+        else {
+            return false;
+        };
+        if requested.map(|(g, _)| g) != Some(result.generation) {
+            return false;
+        }
+        *requested = None;
+        match result.outcome {
+            Ok(e) => *encoded = Some(e),
+            Err(msg) => *note = Some(msg),
+        }
+        true
+    }
+
     /// Feed progress from a background [`LineIndex`] into the status display.
     pub fn set_line_count(&mut self, count: u64, complete: bool) {
         if let PreviewKind::Windowed {
@@ -213,6 +323,15 @@ impl PreviewState {
     pub fn status_text(&self) -> String {
         match &self.kind {
             PreviewKind::Empty => String::new(),
+            PreviewKind::Image {
+                meta, requested, ..
+            } => {
+                if requested.is_some() {
+                    format!("{} · decoding…", meta.summary())
+                } else {
+                    meta.summary()
+                }
+            }
             PreviewKind::Loaded { lines, scroll } => {
                 format!("line {}/{}", scroll + 1, lines.len().max(1))
             }
@@ -235,7 +354,7 @@ impl PreviewState {
         match &mut self.kind {
             PreviewKind::Loaded { scroll, .. } => *scroll = scroll.saturating_sub(amount),
             PreviewKind::Windowed { window, .. } => window.scroll_up(amount),
-            PreviewKind::Empty => {}
+            PreviewKind::Empty | PreviewKind::Image { .. } => {}
         }
     }
 
@@ -250,7 +369,7 @@ impl PreviewState {
                     window.recover_line_from_total(*t);
                 }
             }
-            PreviewKind::Empty => {}
+            PreviewKind::Empty | PreviewKind::Image { .. } => {}
         }
     }
 
@@ -258,7 +377,7 @@ impl PreviewState {
         match &mut self.kind {
             PreviewKind::Loaded { scroll, .. } => *scroll = 0,
             PreviewKind::Windowed { window, .. } => window.scroll_to_top(),
-            PreviewKind::Empty => {}
+            PreviewKind::Empty | PreviewKind::Image { .. } => {}
         }
     }
 
@@ -273,7 +392,7 @@ impl PreviewState {
                     window.recover_line_from_total(*t);
                 }
             }
-            PreviewKind::Empty => {}
+            PreviewKind::Empty | PreviewKind::Image { .. } => {}
         }
     }
 
@@ -287,7 +406,7 @@ impl PreviewState {
                 *scroll = line.saturating_sub(1).min(lines.len().saturating_sub(1));
             }
             PreviewKind::Windowed { window, .. } => window.goto_line(line as u64, checkpoint),
-            PreviewKind::Empty => {}
+            PreviewKind::Empty | PreviewKind::Image { .. } => {}
         }
     }
 
@@ -339,7 +458,7 @@ impl PreviewState {
             PreviewKind::Windowed { window, .. } => {
                 window.search(forward, |line| search.line_matches(line))
             }
-            PreviewKind::Empty => false,
+            PreviewKind::Empty | PreviewKind::Image { .. } => false,
         }
     }
 }
@@ -469,6 +588,21 @@ fn load_preview_with_threshold(path: &Path, threshold: u64) -> PreviewState {
     let Ok(meta) = fs::metadata(path) else {
         return PreviewState::message(Some(path.to_path_buf()), "Cannot read file", Color::Red);
     };
+
+    // Images first: they are binary, but the pane can show them.
+    if let Some(image_meta) = image::probe(path) {
+        return PreviewState {
+            path: Some(path.to_path_buf()),
+            is_binary: false,
+            kind: PreviewKind::Image {
+                meta: image_meta,
+                encoded: None,
+                requested: None,
+                note: None,
+            },
+            active_search: None,
+        };
+    }
 
     if is_binary(path) {
         let mut state =

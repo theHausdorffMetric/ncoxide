@@ -20,6 +20,10 @@ struct Cli {
     /// Log file path (defaults to $XDG_STATE_HOME/ncoxide/ncoxide.log)
     #[arg(long)]
     log: Option<PathBuf>,
+
+    /// Report the terminal's image protocol and cell size, then exit
+    #[arg(long)]
+    probe_terminal: bool,
 }
 
 /// Default log location: the XDG state dir, not a predictable name in
@@ -42,6 +46,11 @@ fn main() {
     }
 
     let config = Config::load();
+
+    if cli.probe_terminal {
+        print!("{}", ncoxide::graphics::report(&config.preview));
+        return;
+    }
 
     // Starting directory precedence: CLI flag > config > current dir.
     let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"));

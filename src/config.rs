@@ -11,6 +11,7 @@ use crate::error::{NcError, Result};
 pub struct Config {
     pub general: GeneralConfig,
     pub colors: ColorConfig,
+    pub preview: PreviewConfig,
     pub bookmarks: Vec<PathBuf>,
 }
 
@@ -35,6 +36,34 @@ pub struct ColorConfig {
     pub cursor: String,
     pub active_border: String,
     pub inactive_border: String,
+}
+
+/// `[preview]` — image preview settings. The terminal matrix behind them is
+/// in `docs/image-preview-plan.md`; `ncoxide --probe-terminal` shows what
+/// the current terminal reports.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PreviewConfig {
+    /// `auto` (query the terminal), `off`, `halfblocks`, or a forced
+    /// protocol: `sixel`, `kitty`, `iterm2`. `NCOXIDE_IMAGES` overrides it
+    /// for one shell.
+    pub images: String,
+    /// Cell size in pixels `[width, height]` for terminals that do not report
+    /// one (typical over SSH or inside a multiplexer); without it a detected
+    /// protocol silently degrades to half-blocks.
+    pub image_font_size: Option<[u16; 2]>,
+    /// Image files above this size show their header facts only.
+    pub image_max_bytes: u64,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        PreviewConfig {
+            images: "auto".into(),
+            image_font_size: None,
+            image_max_bytes: 64 * 1024 * 1024,
+        }
+    }
 }
 
 impl Default for GeneralConfig {
@@ -127,6 +156,19 @@ mod tests {
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: Config = toml::from_str(&serialized).unwrap();
         assert_eq!(deserialized.general.sort_by, config.general.sort_by);
+    }
+
+    #[test]
+    fn test_preview_config_parse_and_defaults() {
+        let config: Config =
+            toml::from_str("[preview]\nimages = \"sixel\"\nimage_font_size = [9, 18]\n").unwrap();
+        assert_eq!(config.preview.images, "sixel");
+        assert_eq!(config.preview.image_font_size, Some([9, 18]));
+        assert_eq!(config.preview.image_max_bytes, 64 * 1024 * 1024);
+
+        let defaults = Config::default();
+        assert_eq!(defaults.preview.images, "auto");
+        assert!(defaults.preview.image_font_size.is_none());
     }
 
     #[test]

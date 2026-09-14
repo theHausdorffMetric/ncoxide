@@ -2,6 +2,7 @@ pub mod app;
 pub mod config;
 pub mod error;
 pub mod finder;
+pub mod graphics;
 pub mod mode;
 pub mod pane;
 pub mod platform;

@@ -1,7 +1,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crossterm::event::{self, Event, KeyEvent};
 use crossterm::execute;
@@ -10,17 +10,24 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use ratatui::layout::Rect;
+use ratatui_image::picker::Picker;
 
 use crate::config::Config;
 use crate::error::Result;
 use crate::finder::{Finder, FinderMatch, FinderWalk};
+use crate::graphics;
 use crate::mode::normal::NormalState;
 use crate::mode::{Action, InputKind, Mode};
 use crate::pane::operations;
 use crate::pane::{PaneId, PaneState, SortBy, SortDirection};
 use crate::platform;
-use crate::preview::{self, PreviewState};
+use crate::preview::{self, ImageJob, ImageWorker, PreviewState};
 use crate::ui;
+
+/// How long the cursor must rest on an image before it is decoded, so a
+/// held `j` over a photo folder decodes only where it stops.
+const IMAGE_DEBOUNCE: Duration = Duration::from_millis(80);
 use crate::ui::dialog::{ConfirmAction, Dialog};
 
 /// Application state. Owns both panes and current mode.
@@ -52,6 +59,15 @@ pub struct App {
     /// Run by the event loop, which owns the `Terminal` and can restore/redraw
     /// the app afterward.
     pending_external: Option<PendingExternal>,
+    /// Terminal graphics capability, probed once in `run`; `None` means
+    /// images are off (config) or there is no terminal (tests).
+    picker: Option<Picker>,
+    image_worker: Option<ImageWorker>,
+    /// Sequence for image encode requests; results for older generations
+    /// are dropped (the cursor moved on, or the pane was resized).
+    image_generation: u64,
+    /// When the preview last switched file, for [`IMAGE_DEBOUNCE`].
+    preview_changed_at: Instant,
 }
 
 /// A full-screen takeover the event loop should run between frames.
@@ -97,6 +113,20 @@ impl App {
             finder_seen: (0, false),
             page_size: 20,
             pending_external: None,
+            picker: None,
+            image_worker: None,
+            image_generation: 0,
+            preview_changed_at: Instant::now(),
+        }
+    }
+
+    /// Draw images with `picker` (starts the decode worker). `run` calls
+    /// this with the probed terminal capability; tests and embedders can
+    /// pass e.g. `Picker::halfblocks()`.
+    pub fn enable_images(&mut self, picker: Picker) {
+        self.picker = Some(picker);
+        if self.image_worker.is_none() {
+            self.image_worker = Some(ImageWorker::spawn());
         }
     }
 
@@ -190,6 +220,15 @@ impl App {
         let mut stdout = io::stdout();
         execute!(stdout, EnterAlternateScreen).map_err(crate::error::NcError::Io)?;
 
+        // Probe the terminal's graphics support now: raw mode is on, nothing
+        // else has read stdin yet, and no worker thread exists (the probe may
+        // edit the environment inside zellij — see `graphics`).
+        let probe = graphics::probe(&self.config.preview);
+        log::info!("images: {}", graphics::describe(&probe));
+        if let Some(picker) = probe.picker {
+            self.enable_images(picker);
+        }
+
         let backend = CrosstermBackend::new(stdout);
         let mut terminal = Terminal::new(backend).map_err(crate::error::NcError::Io)?;
         terminal.clear().map_err(crate::error::NcError::Io)?;
@@ -249,6 +288,13 @@ impl App {
                 dirty = true;
             }
 
+            // Image previews: collect finished encodes, request the next one
+            // for the pane's current size.
+            let size = terminal.size().map_err(crate::error::NcError::Io)?;
+            if self.pump_images(Rect::new(0, 0, size.width, size.height)) {
+                dirty = true;
+            }
+
             // Hand the terminal to an external program (pager/editor) if
             // requested, then re-establish the app's TUI and force a full
             // repaint — ratatui's buffer is otherwise out of sync with the
@@ -270,7 +316,15 @@ impl App {
         match pending {
             // The pager manages its own raw mode / alternate screen.
             PendingExternal::View(path) => {
-                let _ = crate::viewer::view_file(&path);
+                let _ = if preview::image::probe(&path).is_some() {
+                    crate::viewer::view_image(
+                        &path,
+                        self.picker.as_ref(),
+                        self.config.preview.image_max_bytes,
+                    )
+                } else {
+                    crate::viewer::view_file(&path)
+                };
             }
             // The editor needs cooked mode on the primary screen.
             PendingExternal::Edit(path) => {
@@ -1013,6 +1067,63 @@ impl App {
         } else {
             self.preview_state = preview::load_preview(&entry.path);
         }
+        self.preview_changed_at = Instant::now();
+    }
+
+    /// Drive image previews from the event loop: apply finished encodes,
+    /// then request one when the previewed image has no payload for the
+    /// pane's current inner size (first show, or after a resize). Returns
+    /// true when the frame needs redrawing.
+    fn pump_images(&mut self, area: Rect) -> bool {
+        let mut changed = false;
+        if let Some(worker) = &self.image_worker {
+            while let Some(result) = worker.try_recv() {
+                changed |= self.preview_state.apply_image_result(result);
+            }
+        }
+        if !self.preview_active {
+            return changed;
+        }
+        let target = ui::layout::preview_inner(area, self.active_pane).as_size();
+        if target.width == 0 || target.height == 0 || !self.preview_state.image_wants_encode(target)
+        {
+            return changed;
+        }
+        let (Some(picker), Some(worker)) = (&self.picker, &self.image_worker) else {
+            self.preview_state
+                .set_image_note("image preview off ([preview] images)".into());
+            return true;
+        };
+        if self.preview_changed_at.elapsed() < IMAGE_DEBOUNCE {
+            return changed;
+        }
+        let Some((path, bytes)) = self
+            .preview_state
+            .path
+            .clone()
+            .zip(self.preview_state.image_meta().map(|m| m.bytes))
+        else {
+            return changed;
+        };
+        let limit = self.config.preview.image_max_bytes;
+        if bytes > limit {
+            self.preview_state.set_image_note(format!(
+                "not decoded: {} exceeds [preview] image_max_bytes ({})",
+                platform::format_file_size(bytes),
+                platform::format_file_size(limit)
+            ));
+            return true;
+        }
+        self.image_generation += 1;
+        self.preview_state
+            .mark_image_requested(self.image_generation, target);
+        worker.submit(ImageJob {
+            generation: self.image_generation,
+            path,
+            target,
+            picker: picker.clone(),
+        });
+        true
     }
 
     /// A file operation changed the filesystem: drop the preview's by-path
@@ -1643,6 +1754,114 @@ mod integration {
 
         app.handle_key(key('.'));
         assert!(!preview_text(&app).contains(".dotfile"));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Write a small gradient PNG (real pixels, so the header probe and the
+    /// decoder both accept it).
+    fn write_png(path: &Path, w: u32, h: u32) {
+        image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([(x * 6) as u8, (y * 10) as u8, 128])
+        })
+        .save(path)
+        .unwrap();
+    }
+
+    /// Run the image pump until a payload for `area`'s preview pane has
+    /// arrived, or a note says why none will (bounded wait).
+    fn pump_until_encoded(app: &mut App, area: Rect) {
+        let target = crate::ui::layout::preview_inner(area, app.active_pane).as_size();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            app.pump_images(area);
+            if app
+                .preview_state
+                .encoded_image()
+                .is_some_and(|e| e.target == target)
+                || preview_text(app).contains("not decoded")
+            {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!("image never encoded: {}", preview_text(app));
+    }
+
+    #[test]
+    fn test_image_preview_shows_facts_then_halfblocks() {
+        let (dir, mut app) = app_with("imgprev", &[]);
+        write_png(&dir.join("photo.png"), 40, 24);
+        let _ = app.left_pane.refresh();
+        app.enable_images(Picker::halfblocks());
+
+        app.handle_key(key('p'));
+        // Header facts are known at once, before any decoding.
+        let text = preview_text(&app);
+        assert!(text.contains("40×24 PNG"), "{text}");
+        assert!(app.preview_state.encoded_image().is_none());
+
+        let area = Rect::new(0, 0, 80, 24);
+        pump_until_encoded(&mut app, area);
+        let enc = app.preview_state.encoded_image().expect("encoded");
+        assert_eq!(
+            enc.target,
+            crate::ui::layout::preview_inner(area, PaneId::Left).as_size()
+        );
+
+        // Half-blocks render as `▄` cells inside the preview pane; the title
+        // carries the facts.
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains('▄'), "{screen}");
+        assert!(screen.contains("40×24 PNG"), "{screen}");
+
+        // With an overlay up the pixels must not be drawn (they would show
+        // through it); they come back once it closes.
+        app.handle_key(key('?'));
+        assert!(!render(&app, 80, 24).contains('▄'));
+        app.handle_key(code(KeyCode::Esc));
+        assert!(render(&app, 80, 24).contains('▄'));
+
+        // A different pane size invalidates the payload: nothing stale is
+        // drawn, and the pump re-requests for the new size.
+        let wider = Rect::new(0, 0, 120, 30);
+        assert!(
+            app.preview_state.image_wants_encode(
+                crate::ui::layout::preview_inner(wider, PaneId::Left).as_size()
+            )
+        );
+        assert!(!render(&app, 120, 30).contains('▄'));
+        pump_until_encoded(&mut app, wider);
+        assert!(render(&app, 120, 30).contains('▄'));
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_image_preview_off_and_too_large_show_a_note() {
+        let (dir, mut app) = app_with("imgoff", &[]);
+        write_png(&dir.join("photo.png"), 8, 8);
+        let _ = app.left_pane.refresh();
+
+        // No picker: facts plus a note, never a decode.
+        app.handle_key(key('p'));
+        assert!(app.pump_images(Rect::new(0, 0, 80, 24)));
+        let text = preview_text(&app);
+        assert!(text.contains("8×8 PNG") && text.contains("off"), "{text}");
+        assert!(
+            !app.preview_state
+                .image_wants_encode(ratatui::layout::Size::new(10, 10))
+        );
+
+        // Over the size limit: a note naming the limit, no decode.
+        app.config.preview.image_max_bytes = 1;
+        app.enable_images(Picker::halfblocks());
+        app.invalidate_preview();
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+        assert!(app.pump_images(Rect::new(0, 0, 80, 24)));
+        let text = preview_text(&app);
+        assert!(text.contains("image_max_bytes"), "{text}");
+        assert!(app.preview_state.encoded_image().is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }

@@ -8,12 +8,18 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use ratatui::Terminal;
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui_image::Image;
+use ratatui_image::picker::Picker;
 
-use crate::preview::{self, FilterMatch, LineFilter, LineIndex, PreviewState, SearchKind};
+use crate::platform;
+use crate::preview::{
+    self, EncodedImage, FilterMatch, ImageJob, ImageMeta, ImageWorker, LineFilter, LineIndex,
+    PreviewState, SearchKind,
+};
 
 const FILTER_MAX: usize = 200;
 
@@ -198,6 +204,161 @@ pub fn view_file(path: &Path) -> crate::error::Result<()> {
     execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
     terminal.show_cursor().ok();
     Ok(())
+}
+
+/// Full-screen image view: the picture fitted to the window, its header
+/// facts in the title. Resizes re-encode; `q` / `Esc` close. Falls back to
+/// the pager when `path` turns out not to be an image after all.
+pub fn view_image(
+    path: &Path,
+    picker: Option<&Picker>,
+    max_bytes: u64,
+) -> crate::error::Result<()> {
+    let Some(meta) = preview::image::probe(path) else {
+        return view_file(path);
+    };
+    let worker = ImageWorker::spawn();
+    let mut encoded: Option<EncodedImage> = None;
+    let mut requested: Option<(u64, Size)> = None;
+    let mut generation = 0u64;
+    let mut note: Option<String> = match picker {
+        None => Some("image preview off ([preview] images)".into()),
+        Some(_) if meta.bytes > max_bytes => Some(format!(
+            "not decoded: {} exceeds [preview] image_max_bytes ({})",
+            platform::format_file_size(meta.bytes),
+            platform::format_file_size(max_bytes)
+        )),
+        Some(_) => None,
+    };
+
+    enable_raw_mode().map_err(crate::error::NcError::Io)?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen).map_err(crate::error::NcError::Io)?;
+    let backend = ratatui::backend::CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).map_err(crate::error::NcError::Io)?;
+
+    loop {
+        while let Some(result) = worker.try_recv() {
+            if requested.map(|(g, _)| g) == Some(result.generation) {
+                requested = None;
+                match result.outcome {
+                    Ok(e) => encoded = Some(e),
+                    Err(msg) => note = Some(msg),
+                }
+            }
+        }
+
+        // Encode for the current content area; a resize changes it and
+        // triggers a fresh encode on the next pass.
+        let size = terminal.size().map_err(crate::error::NcError::Io)?;
+        let (content, _) = image_view_layout(Rect::new(0, 0, size.width, size.height));
+        let target = Block::default()
+            .borders(Borders::ALL)
+            .inner(content)
+            .as_size();
+        if let Some(picker) = picker
+            && note.is_none()
+            && requested.is_none()
+            && target.width > 0
+            && target.height > 0
+            && encoded.as_ref().is_none_or(|e| e.target != target)
+        {
+            generation += 1;
+            requested = Some((generation, target));
+            worker.submit(ImageJob {
+                generation,
+                path: path.to_path_buf(),
+                target,
+                picker: picker.clone(),
+            });
+        }
+
+        terminal
+            .draw(|f| {
+                draw_image_view(
+                    f,
+                    path,
+                    &meta,
+                    encoded.as_ref(),
+                    requested.is_some(),
+                    note.as_deref(),
+                )
+            })
+            .map_err(crate::error::NcError::Io)?;
+
+        if !event::poll(Duration::from_millis(100)).map_err(crate::error::NcError::Io)? {
+            continue;
+        }
+        if let Event::Key(key) = event::read().map_err(crate::error::NcError::Io)?
+            && matches!(key.code, KeyCode::Char('q') | KeyCode::Esc)
+        {
+            break;
+        }
+    }
+
+    disable_raw_mode().ok();
+    execute!(terminal.backend_mut(), LeaveAlternateScreen).ok();
+    terminal.show_cursor().ok();
+    Ok(())
+}
+
+/// `(content, footer)` rows of the image view. The footer keeps the picture
+/// off the terminal's last row, where a sixel would scroll the screen.
+fn image_view_layout(area: Rect) -> (Rect, Rect) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .split(area);
+    (chunks[0], chunks[1])
+}
+
+fn draw_image_view(
+    f: &mut ratatui::Frame,
+    path: &Path,
+    meta: &ImageMeta,
+    encoded: Option<&EncodedImage>,
+    decoding: bool,
+    note: Option<&str>,
+) {
+    let (content, footer) = image_view_layout(f.area());
+
+    let block = Block::default()
+        .title(format!(" {} — {} ", path.display(), meta.summary()))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+    let inner = block.inner(content);
+    f.render_widget(block, content);
+
+    match encoded {
+        Some(enc) if enc.target == inner.as_size() => {
+            let size = enc.protocol.size();
+            let rect = Rect::new(
+                inner.x + inner.width.saturating_sub(size.width) / 2,
+                inner.y + inner.height.saturating_sub(size.height) / 2,
+                size.width.min(inner.width),
+                size.height.min(inner.height),
+            );
+            f.render_widget(Image::new(&enc.protocol), rect);
+        }
+        _ => {
+            let (text, color) = match note {
+                Some(n) => (n.to_string(), Color::Red),
+                None if decoding => ("decoding…".to_string(), Color::DarkGray),
+                None => (String::new(), Color::DarkGray),
+            };
+            f.render_widget(
+                Paragraph::new(text).style(Style::default().fg(color)),
+                inner,
+            );
+        }
+    }
+
+    let hint = Paragraph::new("q quit").style(
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM),
+    );
+    f.render_widget(hint, footer);
 }
 
 /// Jump to 1-based `line`, using the sparse index checkpoint when available.
@@ -387,6 +548,25 @@ mod tests {
         // load_preview handles missing files with a message line.
         let state = preview::load_preview(Path::new("/nonexistent/file"));
         assert!(!state.render(1).is_empty());
+    }
+
+    #[test]
+    fn test_image_view_draws_panic_free_at_tiny_sizes() {
+        let meta = ImageMeta {
+            width: 4,
+            height: 4,
+            format: image::ImageFormat::Png,
+            bytes: 100,
+        };
+        for (w, h) in [(1u16, 1u16), (2, 2), (10, 3), (80, 24)] {
+            let mut terminal = Terminal::new(ratatui::backend::TestBackend::new(w, h)).unwrap();
+            terminal
+                .draw(|f| draw_image_view(f, Path::new("x.png"), &meta, None, true, None))
+                .unwrap();
+            terminal
+                .draw(|f| draw_image_view(f, Path::new("x.png"), &meta, None, false, Some("no")))
+                .unwrap();
+        }
     }
 
     #[test]
