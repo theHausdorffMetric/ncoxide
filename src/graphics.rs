@@ -14,16 +14,29 @@
 //!   which ratatui-image degrades to half-blocks even when it detected a
 //!   protocol. `[preview] images` forces a protocol and `image_font_size`
 //!   restores the pixel mapping.
+//! - **WezTerm** answers the Kitty query, but its Kitty support lacks the
+//!   unicode placeholders ratatui-image draws with: the picture comes out
+//!   as rows of missing-glyph boxes plus a "no fonts contain glyphs" warning.
+//!   ratatui-image avoids Kitty on WezTerm only when the env hint is there,
+//!   which over SSH it is not. So the terminal is asked for its name first
+//!   (XTVERSION, which does cross SSH) and WezTerm gets iTerm2 — or Sixel
+//!   through zellij, which forwards no iTerm2.
 
 use std::env;
 use std::ffi::OsString;
 use std::fmt::{self, Write as _};
-use std::io::IsTerminal;
+use std::io::{self, IsTerminal, Read as _, Write as _};
+use std::time::{Duration, Instant};
 
 use ratatui_image::FontSize;
+use ratatui_image::picker::cap_parser::QueryStdioOptions;
 use ratatui_image::picker::{Capability, Picker, ProtocolType};
 
 use crate::config::PreviewConfig;
+
+/// How long to wait for the XTVERSION reply. Every terminal answers the DSR
+/// sent with it, so this only matters for a terminal that answers nothing.
+const XTVERSION_TIMEOUT: Duration = Duration::from_millis(1000);
 
 /// Per-shell override of `[preview] images` (the same config file is often
 /// used both locally and over SSH, where the right answer differs).
@@ -111,17 +124,121 @@ pub fn in_zellij() -> bool {
     env::var_os("ZELLIJ").is_some()
 }
 
-/// Run ratatui-image's stdio query. Returns `None` when stdin/stdout are not
-/// a terminal (the query would block on a closed pipe) or the query fails.
+/// Ask the terminal for its name and version (XTVERSION, `CSI > q`); the
+/// reply is `DCS > | name version ST`. A DSR (`CSI 5 n`) is sent right
+/// after, so a terminal that ignores XTVERSION still answers (`CSI 0 n`) and
+/// the read ends without waiting for the timeout. Needs a terminal on
+/// stdin/stdout; switches raw mode on for the exchange if it is not yet.
+fn query_terminal_name() -> Option<String> {
+    let was_raw = crossterm::terminal::is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw && crossterm::terminal::enable_raw_mode().is_err() {
+        return None;
+    }
+    let result = (|| {
+        let mut out = io::stdout();
+        out.write_all(b"\x1b[>q\x1b[5n").ok()?;
+        out.flush().ok()?;
+        let deadline = Instant::now() + XTVERSION_TIMEOUT;
+        let mut buf = Vec::new();
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() || !stdin_readable(remaining) {
+                break;
+            }
+            let mut chunk = [0u8; 256];
+            let n = io::stdin().read(&mut chunk).ok()?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.windows(4).any(|w| w == b"\x1b[0n") {
+                break;
+            }
+        }
+        parse_xtversion(&buf)
+    })();
+    if !was_raw {
+        let _ = crossterm::terminal::disable_raw_mode();
+    }
+    result
+}
+
+/// Wait until stdin has bytes to read, at most `timeout`.
+fn stdin_readable(timeout: Duration) -> bool {
+    let mut fds = libc::pollfd {
+        fd: libc::STDIN_FILENO,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+    // SAFETY: `fds` is one valid, initialised pollfd that outlives the call.
+    unsafe { libc::poll(&mut fds, 1, ms) > 0 }
+}
+
+/// `name version` out of a `DCS > | … ST` reply, if `bytes` holds one.
+fn parse_xtversion(bytes: &[u8]) -> Option<String> {
+    let text = String::from_utf8_lossy(bytes);
+    let start = text.find("\x1bP>|")? + 4;
+    let rest = &text[start..];
+    let end = rest
+        .find("\x1b\\")
+        .or_else(|| rest.find('\u{9c}'))
+        .unwrap_or(rest.len());
+    let name = rest[..end].trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+fn is_wezterm(terminal: Option<&str>) -> bool {
+    terminal.is_some_and(|t| t.to_ascii_lowercase().contains("wezterm"))
+}
+
+/// Protocols to leave out of ratatui-image's query. On WezTerm: Kitty (no
+/// unicode placeholders) and, unless zellij is in between, Sixel (glitchy;
+/// iTerm2 is the clean path there). Through zellij only Kitty and Sixel
+/// are forwarded, so Sixel stays in.
+fn blacklist_for(wezterm: bool, zellij: bool) -> Vec<ProtocolType> {
+    match (wezterm, zellij) {
+        (false, _) => Vec::new(),
+        (true, true) => vec![ProtocolType::Kitty],
+        (true, false) => vec![ProtocolType::Kitty, ProtocolType::Sixel],
+    }
+}
+
+/// The protocol to use regardless of what the query found: iTerm2 on a
+/// directly attached WezTerm (ratatui-image would pick it from the env hint
+/// locally; over SSH the hint is missing).
+fn protocol_override(wezterm: bool, zellij: bool) -> Option<ProtocolType> {
+    (wezterm && !zellij).then_some(ProtocolType::Iterm2)
+}
+
+/// What the terminal queries found.
+struct Queried {
+    picker: Picker,
+    /// The XTVERSION reply, e.g. `WezTerm 20240203-110809-5046fc22`.
+    terminal: Option<String>,
+    /// A terminal-specific rule that changed the outcome.
+    rule: Option<&'static str>,
+}
+
+/// Run the terminal queries. Returns `None` when stdin/stdout are not a
+/// terminal (the query would block on a closed pipe) or the query fails.
 ///
 /// Must run before any worker thread exists: inside zellij it edits the
 /// process environment around the query.
-fn query() -> Option<Picker> {
-    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+fn query() -> Option<Queried> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         log::info!("images: stdio is not a terminal, skipping the graphics query");
         return None;
     }
-    let hidden: Vec<(&str, OsString)> = if in_zellij() {
+    let terminal = query_terminal_name();
+    let wezterm = is_wezterm(terminal.as_deref());
+    let zellij = in_zellij();
+    let options = QueryStdioOptions {
+        blacklist_protocols: blacklist_for(wezterm, zellij),
+        ..Default::default()
+    };
+
+    let hidden: Vec<(&str, OsString)> = if zellij {
         HINT_VARS
             .iter()
             .filter_map(|k| env::var_os(k).map(|v| (*k, v)))
@@ -142,7 +259,7 @@ fn query() -> Option<Picker> {
             env::remove_var(k);
         }
     }
-    let result = Picker::from_query_stdio();
+    let result = Picker::from_query_stdio_with_options(options);
     // SAFETY: as above; the query itself spawns a reader thread but joins or
     // abandons it before returning, and it does not touch the environment.
     unsafe {
@@ -150,13 +267,25 @@ fn query() -> Option<Picker> {
             env::set_var(k, v);
         }
     }
-    match result {
-        Ok(picker) => Some(picker),
+    let mut picker = match result {
+        Ok(picker) => picker,
         Err(e) => {
             log::warn!("images: terminal query failed: {e}");
-            None
+            return None;
         }
+    };
+    let mut rule = None;
+    if let Some(proto) = protocol_override(wezterm, zellij) {
+        picker.set_protocol_type(proto);
+        rule = Some("WezTerm: iTerm2 instead of Kitty/Sixel");
+    } else if wezterm {
+        rule = Some("WezTerm through zellij: Kitty left out");
     }
+    Some(Queried {
+        picker,
+        terminal,
+        rule,
+    })
 }
 
 /// The protocol the terminal actually reported support for, best first.
@@ -176,6 +305,10 @@ pub struct Probe {
     pub mode: ImageMode,
     pub picker: Option<Picker>,
     pub source: &'static str,
+    /// The terminal's XTVERSION reply, when it gave one.
+    pub terminal: Option<String>,
+    /// A terminal-specific rule that changed the outcome.
+    pub rule: Option<&'static str>,
 }
 
 /// Decide how images are drawn. Runs the terminal query for every mode
@@ -190,18 +323,29 @@ pub fn probe(config: &PreviewConfig) -> Probe {
             mode,
             picker: None,
             source: "off",
+            terminal: None,
+            rule: None,
         },
         ImageMode::Halfblocks => Probe {
             mode,
             picker: Some(Picker::halfblocks()),
             source: "halfblocks, no query",
+            terminal: None,
+            rule: None,
         },
         ImageMode::Auto | ImageMode::Sixel | ImageMode::Kitty | ImageMode::Iterm2 => {
-            let Some(mut picker) = query() else {
+            let Some(Queried {
+                mut picker,
+                terminal,
+                rule,
+            }) = query()
+            else {
                 return Probe {
                     mode,
                     picker: None,
                     source: "no terminal",
+                    terminal: None,
+                    rule: None,
                 };
             };
             let mut source = "terminal query";
@@ -228,6 +372,8 @@ pub fn probe(config: &PreviewConfig) -> Probe {
                 mode,
                 picker: Some(picker),
                 source,
+                terminal,
+                rule,
             }
         }
     }
@@ -235,15 +381,21 @@ pub fn probe(config: &PreviewConfig) -> Probe {
 
 /// One-line summary for the log.
 pub fn describe(probe: &Probe) -> String {
+    let mut how = probe.source.to_string();
+    if let Some(t) = &probe.terminal {
+        how.push_str(&format!("; terminal {t}"));
+    }
+    if let Some(r) = probe.rule {
+        how.push_str(&format!("; {r}"));
+    }
     match &probe.picker {
-        None => format!("mode {} → no graphics ({})", probe.mode, probe.source),
+        None => format!("mode {} → no graphics ({how})", probe.mode),
         Some(p) => format!(
-            "mode {} → {:?}, cell {}x{} px ({})",
+            "mode {} → {:?}, cell {}x{} px ({how})",
             probe.mode,
             p.protocol_type(),
             p.font_size().width,
             p.font_size().height,
-            probe.source
         ),
     }
 }
@@ -287,6 +439,11 @@ pub fn report(config: &PreviewConfig) -> String {
 
     let probe = probe(config);
     let _ = writeln!(out, "result: {}", describe(&probe));
+    let _ = writeln!(
+        out,
+        "  terminal (XTVERSION): {}",
+        probe.terminal.as_deref().unwrap_or("no reply")
+    );
     if let Some(p) = &probe.picker {
         let _ = writeln!(out, "  capabilities: {:?}", p.capabilities());
         if p.protocol_type() == ProtocolType::Halfblocks
@@ -343,6 +500,55 @@ mod tests {
             Some(ProtocolType::Sixel)
         );
         assert_eq!(best_capability(&[Capability::CellSize(None)]), None);
+    }
+
+    #[test]
+    fn test_parse_xtversion() {
+        assert_eq!(
+            parse_xtversion(b"\x1bP>|WezTerm 20240203-110809-5046fc22\x1b\\\x1b[0n").as_deref(),
+            Some("WezTerm 20240203-110809-5046fc22")
+        );
+        // C1 string terminator, and bytes before the reply.
+        assert_eq!(
+            parse_xtversion("xx\x1bP>|foot 1.16.2\u{9c}".as_bytes()).as_deref(),
+            Some("foot 1.16.2")
+        );
+        // Only the DSR answer: the terminal ignores XTVERSION.
+        assert_eq!(parse_xtversion(b"\x1b[0n"), None);
+        assert_eq!(parse_xtversion(b""), None);
+    }
+
+    #[test]
+    fn test_wezterm_rules() {
+        assert!(is_wezterm(Some("WezTerm 20240203-110809-5046fc22")));
+        assert!(is_wezterm(Some("wezterm nightly")));
+        assert!(!is_wezterm(Some("kitty(0.36.4)")));
+        assert!(!is_wezterm(None));
+
+        assert_eq!(
+            blacklist_for(true, false),
+            vec![ProtocolType::Kitty, ProtocolType::Sixel]
+        );
+        assert_eq!(blacklist_for(true, true), vec![ProtocolType::Kitty]);
+        assert!(blacklist_for(false, true).is_empty());
+
+        assert_eq!(protocol_override(true, false), Some(ProtocolType::Iterm2));
+        assert_eq!(protocol_override(true, true), None);
+        assert_eq!(protocol_override(false, false), None);
+    }
+
+    #[test]
+    fn test_describe_mentions_terminal_and_rule() {
+        let probe = Probe {
+            mode: ImageMode::Auto,
+            picker: Some(Picker::halfblocks()),
+            source: "terminal query",
+            terminal: Some("WezTerm 2024".into()),
+            rule: Some("WezTerm: iTerm2 instead of Kitty/Sixel"),
+        };
+        let text = describe(&probe);
+        assert!(text.contains("terminal WezTerm 2024"), "{text}");
+        assert!(text.contains("iTerm2 instead of Kitty"), "{text}");
     }
 
     #[test]

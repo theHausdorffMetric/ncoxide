@@ -41,7 +41,7 @@ protocol the terminal offers and falling back to unicode half-blocks.
 | Situation | Protocol picked | Notes |
 |---|---|---|
 | WezTerm, local | iTerm2 | Detected from `WEZTERM_EXECUTABLE` / `TERM_PROGRAM`. ratatui-image blacklists Kitty and Sixel on WezTerm on purpose: WezTerm's kitty implementation is non-conformant and its sixel has glitches; iTerm2 is the only "bug-free" path there. |
-| WezTerm over SSH | Sixel (or Kitty) | The env hints don't cross SSH, so the blacklist is off and the io query decides: Kitty if `enable_kitty_graphics = true` in the WezTerm config (default false), else Sixel via DA1. Either may show WezTerm's known glitches → set the override to `iterm2` (OSC 1337 passes through SSH fine) or forward the env var with `SendEnv`/`AcceptEnv`. |
+| WezTerm over SSH | iTerm2 | The env hints don't cross SSH, but the XTVERSION reply (`CSI > q`) does: ncoxide asks for it first and applies the same rule as locally. Seen in practice before that rule existed: WezTerm answered the Kitty query, ratatui-image drew with Kitty unicode placeholders, WezTerm rendered them as missing-glyph boxes plus a "no fonts contain glyphs" warning. |
 | Alacritty 0.17 | Halfblocks | Alacritty implements no graphics protocol at all (only the ayosec fork has sixel). Halfblocks give 1×2 "pixels" per cell, so a 40×20 pane is a 40×40 thumbnail. Good enough to recognise a photo, not more. |
 | zellij 0.45 (any host) | Kitty or Sixel, never iTerm2 | zellij 0.45 implements Kitty graphics and Sixel itself and only advertises them if the host terminal supports them. It does **not** pass OSC 1337 (iTerm2) through. Panes inherit the zellij server's env, so a stale `WEZTERM_EXECUTABLE` makes ratatui-image choose iTerm2 → blank. Rule in our probe: if `ZELLIJ` is set, ignore env hints and force the io-query result (or the config override). |
 | Dan's current setup: laptop → SSH → workstation → zellij | Sixel most likely | No env hints (checked: `TERM_PROGRAM` empty, `SSH_CONNECTION` set, zellij 0.45.1). Cell size comes from the ioctl if the SSH client forwarded pixel dimensions; if not, halfblocks — that is what `image_font_size` is for. |
@@ -129,8 +129,8 @@ row; record the result here. Expected values from the terminal matrix above.
 |---|---|---|---|---|
 | Alacritty 0.17, local | halfblocks | | | |
 | WezTerm, local | iTerm2 | | | |
-| WezTerm → SSH → workstation | sixel (kitty if enabled) | | | try `NCOXIDE_IMAGES=iterm2` |
-| WezTerm → SSH → zellij 0.45 | sixel or kitty | | | env hints hidden; check `image_font_size` if halfblocks |
+| WezTerm → SSH → workstation | iTerm2 (XTVERSION rule) | | | before the rule: Kitty → placeholder boxes (2026-09-14) |
+| WezTerm → SSH → zellij 0.45 | sixel if zellij passes XTVERSION through, else kitty via zellij | | | env hints hidden; check `image_font_size` if halfblocks; does zellij answer `CSI > q` itself? |
 | Alacritty → SSH → zellij 0.45 | halfblocks | | | |
 
 Also worth a look in each: overlays (`?`, Space menu) over a picture, a

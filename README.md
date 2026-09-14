@@ -119,10 +119,11 @@ image_max_bytes = 67108864 # larger image files show their header facts only
 shell, which is handy when the same config serves a local terminal and an
 SSH session.
 
-Terminal notes: WezTerm uses iTerm2 locally but over SSH needs
-`images = "iterm2"` (the env hints do not cross SSH); Alacritty has no
-graphics protocol and gets half-blocks; zellij 0.45+ forwards Kitty and
-Sixel but never iTerm2. `ncoxide --probe-terminal` shows what was detected
+Terminal notes: WezTerm is recognised by its XTVERSION reply (also over
+SSH) and gets iTerm2, or Sixel through zellij — its Kitty support lacks the
+unicode placeholders ratatui-image draws with; Alacritty has no graphics
+protocol and gets half-blocks; zellij 0.45+ forwards Kitty and Sixel but
+never iTerm2. `ncoxide --probe-terminal` shows what was detected
 and why. Details in `docs/image-preview-plan.md`.
 
 ## Project status
