@@ -231,7 +231,7 @@ ncoxide/src/
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| ratatui | 0.29 | Terminal UI framework |
+| ratatui | 0.30 | Terminal UI framework |
 | crossterm | 0.29 | Terminal backend (event-stream) |
 | thiserror | 2 | Error derive macros |
 | serde | 1 | Config serialization |
@@ -244,8 +244,9 @@ ncoxide/src/
 | libc | 0.2 | statvfs for disk space |
 | unicode-width | 0.2 | Terminal column widths |
 | nucleo-matcher | 0.3 | Fuzzy find (helix's engine) |
-| syntect | 5 | Syntax highlighting |
-| syntect-tui | 3 | syntect → ratatui Span conversion |
+| syntect | 5 | Syntax highlighting (own style conversion; `default-syntaxes` feature is required) |
+| ratatui-image | 11 | Image preview: Sixel / Kitty / iTerm2 / half-block rendering, terminal probe |
+| image | 0.25 | Image decoding (png, jpeg, gif, webp, bmp, ico, tiff, qoi) |
 | regex + memchr | 1 / 2 | Viewer in-file search (smart-case, literal fast path) |
 
 ### Architectural Decisions
