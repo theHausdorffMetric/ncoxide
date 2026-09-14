@@ -1,9 +1,10 @@
 # Image preview via ratatui-image — implementation plan
 
-Status: implemented on branch `image-preview`, 2026-09-14 (mindtask task 166):
-phases 0–3 below are code-complete with the gate green (fmt, clippy
-`-D warnings`, 120 tests, audit). What is left is the manual QA matrix at
-the end of this file, which needs the real terminals.
+Status: released as 0.5.0 on master, 2026-09-14 (mindtask tasks 166, 167).
+Phases 0–3 are complete with the gate green (fmt, clippy `-D warnings`,
+123 tests, audit); the first real-terminal check (WezTerm over SSH) found
+the Kitty-placeholder problem and led to the XTVERSION rule. The rest of
+the QA matrix at the end of this file is still open.
 
 Goal: when the cursor is on an image file, the preview pane (and `Space v`)
 shows the picture instead of `[Binary file]`, using the best graphics
@@ -129,7 +130,7 @@ row; record the result here. Expected values from the terminal matrix above.
 |---|---|---|---|---|
 | Alacritty 0.17, local | halfblocks | | | |
 | WezTerm, local | iTerm2 | | | |
-| WezTerm → SSH → workstation | iTerm2 (XTVERSION rule) | | | before the rule: Kitty → placeholder boxes (2026-09-14) |
+| WezTerm → SSH → workstation | iTerm2 (XTVERSION rule) — confirmed 2026-09-14: `terminal WezTerm 20260815-143815-9c04f79f` | works (Dan, 2026-09-14) | | before the rule: Kitty → placeholder boxes |
 | WezTerm → SSH → zellij 0.45 | sixel if zellij passes XTVERSION through, else kitty via zellij | | | env hints hidden; check `image_font_size` if halfblocks; does zellij answer `CSI > q` itself? |
 | Alacritty → SSH → zellij 0.45 | halfblocks | | | |
 

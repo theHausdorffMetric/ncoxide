@@ -281,14 +281,14 @@ ncoxide/src/
 
 ## 3. Implementation Status
 
-### Build Status (as of the 0.3.x review pass, 2026-07-14)
+### Build Status (as of 0.5.0, the image-preview pass, 2026-09-14)
 
 | Metric | Status |
 |--------|--------|
 | `cargo fmt` + `cargo clippy -D warnings` + build + test | Clean |
-| `cargo test` | **101 passed**, 0 failed (+2 `--ignored` large-file proofs) |
+| `cargo test` | **123 passed**, 0 failed (+2 `--ignored` large-file proofs) |
 | Edition | Rust 2024 |
-| Location | `~/dev/ideas/sourcehut/ncoxide/` |
+| Location | `~/dev/ideas/crates.io/ncoxide/` (submodule of the GitHub repo) |
 | Origin | `https://github.com/theHausdorffMetric/ncoxide` (dev and release in one repo since 2026-09-13) |
 | Upstream | — (the sourcehut release mirror was retired 2026-09-13) |
 | Tracker | GitHub issues on the repo (todo.sr.ht `~danprobst/ncoxide-dev` retired) |

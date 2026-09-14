@@ -1,6 +1,6 @@
 [package]
 name = "ncoxide"
-version = "0.4.1"
+version = "0.5.0"
 edition = "2024"
 description = "Modal dual-pane file commander with helix-inspired interface"
 license = "MIT"
