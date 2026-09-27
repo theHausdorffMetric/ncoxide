@@ -21,6 +21,11 @@ A modal dual-pane file commander for the terminal, inspired by
   in the preview pane and the viewer through the Sixel, Kitty or iTerm2
   graphics protocol (unicode half-blocks elsewhere); decoding runs off the UI
   thread. `ncoxide --probe-terminal` reports what your terminal supports
+- **Image compare** -- `L` locks the picture under the cursor; it takes the
+  file list's half of the screen while the preview keeps following the
+  cursor, so two shots sit side by side at full height. `j`/`k` then step
+  from image to image, the lock survives directory changes, `L` on another
+  image re-locks, `L` on the locked one (or `p`) releases it
 - **File viewer** -- full-screen pager (Space then `v`) with in-file search
   (`/`, literal or `Ctrl-R` regex, `n`/`N` to cycle matches), goto-line
   (`<N>G`), and fuzzy line-filter (`&`, powered by nucleo-matcher)
@@ -77,6 +82,7 @@ ncoxide --left ~/projects --right /tmp
 | `l` / `Enter` | Enter directory or open file |
 | `Tab` | Switch active pane |
 | `p` | Toggle preview pane |
+| `L` | Lock image for side-by-side compare (again to release) |
 | `v` | Enter select mode |
 | `;` | Clear selection (selections persist across modes) |
 | `Space` | Open action menu |
@@ -124,7 +130,8 @@ SSH) and gets iTerm2, or Sixel through zellij — its Kitty support lacks the
 unicode placeholders ratatui-image draws with; Alacritty has no graphics
 protocol and gets half-blocks; zellij 0.45+ forwards Kitty and Sixel but
 never iTerm2. `ncoxide --probe-terminal` shows what was detected
-and why. Details in `docs/image-preview-plan.md`.
+and why. Details in `docs/image-preview-plan.md`; the compare mode is
+designed in `docs/image-compare-plan.md`.
 
 ## Project status
 

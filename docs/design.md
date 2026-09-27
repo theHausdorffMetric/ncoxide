@@ -122,6 +122,7 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 | `:` | Enter Command mode |
 | `.` | Toggle hidden files |
 | `p` / `P` | Toggle preview pane |
+| `L` | Lock image for side-by-side compare (again: release / re-lock) |
 | `r` | Quick rename (Input mode) |
 | `d` | Delete (with confirm dialog) |
 | `y` | Copy to other pane |
@@ -155,6 +156,7 @@ registers; the implementation deliberately went dual-pane-native instead.)
 | `n` | New directory |
 | `e` | Edit with $EDITOR |
 | `v` | View file (built-in pager) |
+| `l` | Lock image for compare (same as `L`) |
 | `f` | Fuzzy file finder |
 | `s` | Sort menu (via command line) |
 | `i` | File info |
@@ -200,6 +202,15 @@ registers; the implementation deliberately went dual-pane-native instead.)
   in `[preview]` / `NCOXIDE_IMAGES`; `--probe-terminal` explains the result.
   While an overlay is up the picture yields to its text lines (pixels are
   not in ratatui's buffer). See `docs/image-preview-plan.md`.
+- **Compare mode** (`L`): the image under the cursor is locked and drawn in
+  place of the file list (`[LOCKED]`, yellow border) while the preview half
+  keeps following the cursor — two full-height halves, the largest the
+  screen offers. `j`/`k` step over non-images meanwhile; the status line
+  shows `CMP` and the cursor position (`23/240 items`) since the list is
+  hidden. The lock is a path: it survives directory changes and is dropped
+  when its file vanishes, on `L` over the locked image, or on `p`. The image
+  worker coalesces jobs per slot (live / locked) so a resize re-encodes
+  both. See `docs/image-compare-plan.md`.
 
 ### Module Structure
 
@@ -218,7 +229,7 @@ ncoxide/src/
 │   ├── window.rs        — windowed reader for large files
 │   ├── index.rs         — background line index
 │   ├── search.rs, filter.rs — in-file search, fuzzy line filter
-│   └── image.rs         — image probe, limited decode, decode/encode worker
+│   └── image.rs         — image probe, limited decode, decode/encode worker (coalesces per live/locked slot)
 ├── viewer.rs            — Full-screen file viewer
 ├── platform.rs          — Unix helpers (disk space, permissions, paths)
 ├── mode/
@@ -319,6 +330,7 @@ sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 | 6 | Preview Mode + File Viewer | Done |
 | 7 | 0.3.0 review pass S1–S11 (`docs/review-0.3.0.md`): data-loss guard, hidden-root finder fix, panic hygiene, Helix selection semantics, dir-contents preview, background finder walk, viewport rendering, cleanup | Done |
 | 8 | Image preview via ratatui-image (`docs/image-preview-plan.md`): ratatui 0.30, terminal probe + config + `--probe-terminal`, pane preview with off-thread decode, full-screen image view | Done (branch `image-preview`, 2026-09-14) |
+| 9 | Image compare (`docs/image-compare-plan.md`): `L` locks a picture into the file-list half, live preview beside it, image-to-image `j`/`k`, per-slot worker coalescing | Code + tests done (branch `image-compare`, 2026-09-27); ships as 0.6.0 after 0.5.0 is published |
 
 ### Public API Surface
 
