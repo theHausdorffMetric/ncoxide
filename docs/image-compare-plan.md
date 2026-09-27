@@ -1,13 +1,14 @@
 # Lock/compare for image previews — implementation plan
 
-Status: phases 1–3 implemented on branch `image-compare` with the gate green
-(fmt, clippy `-D warnings`, 129 tests, audit), 2026-09-27; mindtask task 172
-under concept `ncoxide`. The companion page (below) followed the same day
-on the same branch (139 tests; task 173). Builds on the 0.5.0 image preview
-(`docs/image-preview-plan.md`), which must be published first (task 167);
-this ships as 0.6.0. Still to do: a real-terminal check (WezTerm over SSH,
-as for the preview), a real-browser check of the page, and the version bump
-+ release.
+Status: phases 1–3 implemented with the gate green (fmt, clippy
+`-D warnings`, 129 tests, audit), 2026-09-27; mindtask task 176 under
+concept `ncoxide`. The companion page (below) followed the same day (139
+tests; task 177). Both were merged to master the same day. Builds on the
+0.5.0 image preview (`docs/image-preview-plan.md`); since 0.5.0 was never
+published, **0.5.0 ships all three** — preview, compare, page — under task
+167 (Cargo.toml stays 0.5.0). Still to do before publishing: a
+real-terminal check of `L` (WezTerm over SSH, as for the preview) and a
+real-browser check of the page.
 
 Goal: while flipping through a directory of pictures, **lock** the one under
 the cursor and keep flipping — the locked picture stays on screen beside the
@@ -106,7 +107,7 @@ from the 50 ms loop, `PreviewState` as the single preview model.
    status line, help/menu, tests. Gate: fmt, clippy `-D warnings`, build,
    test, audit.
 3. Docs: README bullet + key table, `design.md` (preview-mode section, module
-   notes, phase table). Release as 0.6.0 after 0.5.0 is on crates.io.
+   notes, phase table). Ships in 0.5.0 together with the image preview.
 
 ## Companion page: the pictures in a browser (`Space w`, `:web`)
 

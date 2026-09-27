@@ -308,12 +308,12 @@ ncoxide/src/
 
 ## 3. Implementation Status
 
-### Build Status (as of 0.5.0, the image-preview pass, 2026-09-14)
+### Build Status (as of 0.5.0 — image preview + compare + compare page, 2026-09-27)
 
 | Metric | Status |
 |--------|--------|
 | `cargo fmt` + `cargo clippy -D warnings` + build + test | Clean |
-| `cargo test` | **123 passed**, 0 failed (+2 `--ignored` large-file proofs) |
+| `cargo test` | **139 passed**, 0 failed (+2 `--ignored` large-file proofs) |
 | Edition | Rust 2024 |
 | Location | `~/dev/ideas/crates.io/ncoxide/` (submodule of the GitHub repo) |
 | Origin | `https://github.com/theHausdorffMetric/ncoxide` (dev and release in one repo since 2026-09-13) |
@@ -324,12 +324,12 @@ ncoxide/src/
 
 | Component | Lines |
 |-----------|------:|
-| Core (app, config, error, lib, main) | 1,910 |
-| Modes (mod, normal, select, space, goto, command, input) | 362 |
-| Pane (state, navigation, selection, operations) | 1,120 |
-| UI (draw, pane_view, status_line, dialog, help) | 676 |
-| Platform + Preview + Viewer + Finder | 2,841 |
-| **Total (incl. tests)** | **6,909** |
+| Core (app, config, error, lib, main) | 2,744 |
+| Modes (mod, normal, select, space, goto, command, input) | 400 |
+| Pane (state, navigation, selection, operations) | 1,226 |
+| UI (draw, pane_view, status_line, dialog, help) | 866 |
+| Platform + Preview + Viewer + Finder + Graphics + Web | 4,889 |
+| **Total (incl. tests)** | **10,125** |
 
 Tests are unit tests per module plus end-to-end tests that drive real key
 sequences through `App::handle_key` and render to ratatui's `TestBackend`.
@@ -346,8 +346,8 @@ sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 | 6 | Preview Mode + File Viewer | Done |
 | 7 | 0.3.0 review pass S1–S11 (`docs/review-0.3.0.md`): data-loss guard, hidden-root finder fix, panic hygiene, Helix selection semantics, dir-contents preview, background finder walk, viewport rendering, cleanup | Done |
 | 8 | Image preview via ratatui-image (`docs/image-preview-plan.md`): ratatui 0.30, terminal probe + config + `--probe-terminal`, pane preview with off-thread decode, full-screen image view | Done (branch `image-preview`, 2026-09-14) |
-| 9 | Image compare (`docs/image-compare-plan.md`): `L` locks a picture into the file-list half, live preview beside it, image-to-image `j`/`k`, per-slot worker coalescing | Code + tests done (branch `image-compare`, 2026-09-27); ships as 0.6.0 after 0.5.0 is published |
-| 10 | Compare page (`docs/image-compare-plan.md`, companion variant): `Space w` / `:web` loopback HTTP server with a capability URL, browser page with fit / 1:1 synced / diff, follows the cursor; `[web]` config; dialogs sized to content | Code + tests done (branch `image-compare`, 2026-09-27); same release |
+| 9 | Image compare (`docs/image-compare-plan.md`): `L` locks a picture into the file-list half, live preview beside it, image-to-image `j`/`k`, per-slot worker coalescing | Done (branch `image-compare`, merged 2026-09-27); ships in 0.5.0 |
+| 10 | Compare page (`docs/image-compare-plan.md`, companion variant): `Space w` / `:web` loopback HTTP server with a capability URL, browser page with fit / 1:1 synced / diff, follows the cursor; `[web]` config; dialogs sized to content | Done (branch `image-compare`, merged 2026-09-27); ships in 0.5.0 |
 
 ### Public API Surface
 
