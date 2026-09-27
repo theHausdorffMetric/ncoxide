@@ -58,7 +58,7 @@ fn ensure_safe_transfer(source: &Path, target_dir: &Path) -> Result<()> {
 
 /// Copy a file or directory to a target directory.
 /// Symlinks are preserved as symlinks rather than followed.
-/// Refuses self- and nested-destination transfers (see [`ensure_safe_transfer`]).
+/// Refuses self- and nested-destination transfers (see `ensure_safe_transfer`).
 pub fn copy_to(source: &Path, target_dir: &Path) -> Result<()> {
     ensure_safe_transfer(source, target_dir)?;
     let name = source
@@ -126,7 +126,7 @@ pub fn path_size(path: &Path) -> Result<u64> {
 }
 
 /// Move a file or directory to a target directory.
-/// Refuses self- and nested-destination transfers (see [`ensure_safe_transfer`]).
+/// Refuses self- and nested-destination transfers (see `ensure_safe_transfer`).
 pub fn move_to(source: &Path, target_dir: &Path) -> Result<()> {
     ensure_safe_transfer(source, target_dir)?;
     let name = source

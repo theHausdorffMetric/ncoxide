@@ -45,7 +45,8 @@ A modal dual-pane file commander for the terminal, inspired by
   substring; toggle hidden files
 - **Open in `$EDITOR`** -- press `Space` then `e` to edit the file under the
   cursor (or `Enter` on a file)
-- **Command mode** -- `:cd`, `:sort`, and `:q` commands
+- **Command mode** -- `:cd <dir>`, `:sort name|size|date|ext`, `:filter <text>`,
+  `:set show_hidden`, `:web` / `:web stop`, and `:q`
 
 ## Installation
 
@@ -61,12 +62,12 @@ cargo install ncoxide
 ncoxide [OPTIONS]
 
 Options:
-  -l, --left <DIR>     Left pane starting directory
-  -r, --right <DIR>    Right pane starting directory
-      --log <FILE>     Log file path [default: $XDG_STATE_HOME/ncoxide/ncoxide.log]
-      --probe-terminal Report the terminal's image protocol and cell size, then exit
-  -h, --help           Print help
-  -V, --version        Print version
+  -l, --left <LEFT>     Left pane starting directory
+  -r, --right <RIGHT>   Right pane starting directory
+      --log <LOG>       Log file path (defaults to $XDG_STATE_HOME/ncoxide/ncoxide.log)
+      --probe-terminal  Report the terminal's image protocol and cell size, then exit
+  -h, --help            Print help
+  -V, --version         Print version
 ```
 
 Both panes default to the current working directory.

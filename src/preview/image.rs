@@ -87,7 +87,7 @@ pub fn probe(path: &Path) -> Option<ImageMeta> {
     })
 }
 
-/// Decode under [`MAX_DIMENSION`] / [`MAX_DECODE_ALLOC`] and apply the EXIF
+/// Decode under `MAX_DIMENSION` / `MAX_DECODE_ALLOC` and apply the EXIF
 /// orientation, so phone photos come out upright.
 pub fn decode(path: &Path) -> Result<DynamicImage, String> {
     let mut reader = ImageReader::open(path)

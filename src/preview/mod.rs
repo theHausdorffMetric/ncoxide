@@ -92,7 +92,7 @@ impl Default for PreviewState {
 }
 
 impl PreviewState {
-    /// A single-line status message (e.g. "[Directory]", errors), with `path`
+    /// A single-line status message (e.g. "\[Directory\]", errors), with `path`
     /// recorded so `update_preview` can dedupe by path.
     pub fn message(path: Option<PathBuf>, text: &str, color: Color) -> Self {
         PreviewState {
