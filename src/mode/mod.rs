@@ -129,4 +129,7 @@ pub enum Action {
     // Preview mode
     TogglePreview,
     ViewFile,
+    /// Lock the image under the cursor for side-by-side compare (again on
+    /// the locked image: unlock; on another image: re-lock).
+    ToggleLock,
 }

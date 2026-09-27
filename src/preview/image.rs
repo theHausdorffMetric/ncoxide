@@ -60,11 +60,19 @@ fn format_label(format: ImageFormat) -> &'static str {
     }
 }
 
+/// Whether `path` has an image extension. No I/O — the check compare mode
+/// runs per entry while stepping over non-images; the header probe below
+/// is the one that confirms a file really is a picture.
+pub fn has_image_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| IMAGE_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()))
+}
+
 /// Identify an image by extension, then confirm by magic bytes and read the
 /// header for its dimensions. Cheap: no pixel data is decoded.
 pub fn probe(path: &Path) -> Option<ImageMeta> {
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-    if !IMAGE_EXTENSIONS.contains(&ext.as_str()) {
+    if !has_image_extension(path) {
         return None;
     }
     let bytes = std::fs::metadata(path).ok()?.len();
@@ -115,9 +123,21 @@ impl fmt::Debug for EncodedImage {
     }
 }
 
+/// Which on-screen picture a job is for. The worker coalesces per slot and
+/// the app routes results by it, so the locked picture is never starved by
+/// a stream of live-preview requests (or vice versa).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImageSlot {
+    /// The preview pane, following the cursor.
+    Live,
+    /// The picture pinned by `L` for side-by-side compare.
+    Locked,
+}
+
 /// A decode+encode request. `generation` lets the app drop results that
 /// arrive after the cursor has moved on.
 pub struct ImageJob {
+    pub slot: ImageSlot,
     pub generation: u64,
     pub path: PathBuf,
     pub target: Size,
@@ -125,6 +145,7 @@ pub struct ImageJob {
 }
 
 pub struct ImageResult {
+    pub slot: ImageSlot,
     pub generation: u64,
     pub outcome: Result<EncodedImage, String>,
 }
@@ -143,9 +164,11 @@ pub fn encode(job: &ImageJob) -> Result<EncodedImage, String> {
     })
 }
 
-/// One long-lived decode/encode thread. Queued jobs coalesce: when several
-/// are waiting only the newest runs (the cursor moved on), and the app drops
-/// results whose generation is stale. Ends when the worker is dropped.
+/// One long-lived decode/encode thread. Queued jobs coalesce per slot: when
+/// several are waiting for the same slot only the newest runs (the cursor
+/// moved on), while a job for the other slot is kept — after a resize both
+/// pictures need a new payload. The app drops results whose generation is
+/// stale. Ends when the worker is dropped.
 pub struct ImageWorker {
     tx: Sender<ImageJob>,
     rx: Receiver<ImageResult>,
@@ -157,24 +180,40 @@ impl ImageWorker {
         let (results, rx) = mpsc::channel::<ImageResult>();
         let spawned = std::thread::Builder::new()
             .name("ncoxide-image".into())
-            .spawn(move || {
-                while let Ok(mut job) = jobs.recv() {
-                    while let Ok(newer) = jobs.try_recv() {
-                        job = newer;
-                    }
-                    let result = ImageResult {
-                        generation: job.generation,
-                        outcome: encode(&job),
-                    };
-                    if results.send(result).is_err() {
-                        break;
-                    }
-                }
-            });
+            .spawn(move || Self::serve(&jobs, &results));
         if let Err(e) = spawned {
             log::warn!("image worker could not start: {e}");
         }
         ImageWorker { tx, rx }
+    }
+
+    /// The worker loop: block while idle, otherwise fold everything queued
+    /// into at most one job per slot and encode the oldest of those. Draining
+    /// again before each encode means a slot's job that went stale while the
+    /// other slot was encoding is replaced, not run.
+    fn serve(jobs: &Receiver<ImageJob>, results: &Sender<ImageResult>) {
+        let mut pending: Vec<ImageJob> = Vec::new();
+        loop {
+            if pending.is_empty() {
+                match jobs.recv() {
+                    Ok(job) => pending.push(job),
+                    Err(_) => return,
+                }
+            }
+            while let Ok(newer) = jobs.try_recv() {
+                pending.retain(|j| j.slot != newer.slot);
+                pending.push(newer);
+            }
+            let job = pending.remove(0);
+            let result = ImageResult {
+                slot: job.slot,
+                generation: job.generation,
+                outcome: encode(&job),
+            };
+            if results.send(result).is_err() {
+                return;
+            }
+        }
     }
 
     pub fn submit(&self, job: ImageJob) {
@@ -273,6 +312,7 @@ mod tests {
             let mut picker = Picker::from_fontsize(FontSize::new(8, 16));
             picker.set_protocol_type(proto);
             let job = ImageJob {
+                slot: ImageSlot::Live,
                 generation: 1,
                 path: path.clone(),
                 target: Size::new(10, 4),
@@ -295,6 +335,7 @@ mod tests {
         // newest generation always produces a result.
         for generation in [1, 2] {
             worker.submit(ImageJob {
+                slot: ImageSlot::Live,
                 generation,
                 path: path.clone(),
                 target: Size::new(10, 5),
@@ -314,7 +355,58 @@ mod tests {
         }
         let result = latest.expect("worker answered");
         assert_eq!(result.generation, 2);
+        assert_eq!(result.slot, ImageSlot::Live);
         let enc = result.outcome.expect("encode ok");
         assert_eq!(enc.target, Size::new(10, 5));
+    }
+
+    #[test]
+    fn test_worker_coalesces_per_slot_not_globally() {
+        // Live 1, Locked 2, Live 3 queued at once: the newest job of *each*
+        // slot must produce a result. A global "newest wins" would starve
+        // the locked picture after every resize.
+        let dir = temp_dir("worker_slots");
+        let path = dir.join("grad.png");
+        write_png(&path, 40, 24);
+        let worker = ImageWorker::spawn();
+        for (slot, generation) in [
+            (ImageSlot::Live, 1),
+            (ImageSlot::Locked, 2),
+            (ImageSlot::Live, 3),
+        ] {
+            worker.submit(ImageJob {
+                slot,
+                generation,
+                path: path.clone(),
+                target: Size::new(10, 5),
+                picker: Picker::halfblocks(),
+            });
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let (mut live, mut locked) = (None, None);
+        while Instant::now() < deadline && (live.is_none() || locked.is_none()) {
+            if let Some(r) = worker.try_recv() {
+                match r.slot {
+                    ImageSlot::Live if r.generation == 3 => live = Some(r),
+                    ImageSlot::Locked => locked = Some(r),
+                    // Live 1 may or may not run, depending on timing.
+                    ImageSlot::Live => {}
+                }
+            } else {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
+        let locked = locked.expect("locked slot answered");
+        assert_eq!(locked.generation, 2);
+        assert!(locked.outcome.is_ok());
+        assert!(live.expect("live slot answered").outcome.is_ok());
+    }
+
+    #[test]
+    fn test_has_image_extension_is_case_insensitive_and_io_free() {
+        assert!(has_image_extension(Path::new("/nope/IMG_0417.JPG")));
+        assert!(has_image_extension(Path::new("x.webp")));
+        assert!(!has_image_extension(Path::new("x.xmp")));
+        assert!(!has_image_extension(Path::new("noext")));
     }
 }

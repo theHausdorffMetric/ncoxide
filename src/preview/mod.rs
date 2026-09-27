@@ -14,7 +14,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 
 pub use filter::{FilterMatch, LineFilter};
-pub use image::{EncodedImage, ImageJob, ImageMeta, ImageResult, ImageWorker};
+pub use image::{EncodedImage, ImageJob, ImageMeta, ImageResult, ImageSlot, ImageWorker};
 pub use index::LineIndex;
 pub use search::{Search, SearchKind};
 use window::FileWindow;

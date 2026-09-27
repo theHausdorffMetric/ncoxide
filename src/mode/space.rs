@@ -13,6 +13,7 @@ pub fn handle_key(key: KeyEvent) -> Action {
         KeyCode::Char('n') => Action::EnterInput(InputKind::Mkdir),
         KeyCode::Char('e') => Action::EditFile,
         KeyCode::Char('v') => Action::ViewFile,
+        KeyCode::Char('l') => Action::ToggleLock,
         KeyCode::Char('s') => Action::EnterInput(InputKind::CommandLine), // sort submenu via command
         KeyCode::Char('f') => Action::EnterFinder,
         KeyCode::Char('i') => Action::ShowFileInfo,

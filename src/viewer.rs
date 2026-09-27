@@ -17,8 +17,8 @@ use ratatui_image::picker::Picker;
 
 use crate::platform;
 use crate::preview::{
-    self, EncodedImage, FilterMatch, ImageJob, ImageMeta, ImageWorker, LineFilter, LineIndex,
-    PreviewState, SearchKind,
+    self, EncodedImage, FilterMatch, ImageJob, ImageMeta, ImageSlot, ImageWorker, LineFilter,
+    LineIndex, PreviewState, SearchKind,
 };
 
 const FILTER_MAX: usize = 200;
@@ -266,6 +266,7 @@ pub fn view_image(
             generation += 1;
             requested = Some((generation, target));
             worker.submit(ImageJob {
+                slot: ImageSlot::Live,
                 generation,
                 path: path.to_path_buf(),
                 target,

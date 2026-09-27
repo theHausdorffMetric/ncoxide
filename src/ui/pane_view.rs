@@ -20,18 +20,30 @@ pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, regions: &Regions, sh
             PaneId::Left => (regions.left, regions.right),
             PaneId::Right => (regions.right, regions.left),
         };
-        draw_single_pane(
-            f,
-            app.active_pane_state(),
-            !app.preview_focused,
-            theme,
-            file_chunk,
-        );
+        // Compare mode: the locked picture takes the file list's half — the
+        // largest two rectangles the screen has — and the live half keeps
+        // following the cursor; titles and status line say where it is.
+        if let Some(locked) = &app.locked_preview {
+            draw_preview_pane(f, locked, "[LOCKED]", Color::Yellow, file_chunk, show_image);
+        } else {
+            draw_single_pane(
+                f,
+                app.active_pane_state(),
+                !app.preview_focused,
+                theme,
+                file_chunk,
+            );
+        }
+        let border = if app.preview_focused {
+            theme.active_border
+        } else {
+            Color::Magenta
+        };
         draw_preview_pane(
             f,
             &app.preview_state,
-            app.preview_focused,
-            theme,
+            "[PREVIEW]",
+            border,
             preview_chunk,
             show_image,
         );
@@ -53,11 +65,12 @@ pub fn draw_panes(f: &mut Frame, app: &App, theme: &Theme, regions: &Regions, sh
     }
 }
 
+/// One preview half: `label` is the title tag (`[PREVIEW]` / `[LOCKED]`).
 fn draw_preview_pane(
     f: &mut Frame,
     state: &preview::PreviewState,
-    is_focused: bool,
-    theme: &Theme,
+    label: &str,
+    border_color: Color,
     area: Rect,
     show_image: bool,
 ) {
@@ -69,16 +82,11 @@ fn draw_preview_pane(
         .unwrap_or_default();
     let status = state.status_text();
     let title = if status.is_empty() {
-        format!(" [PREVIEW] {name} ")
+        format!(" {label} {name} ")
     } else {
-        format!(" [PREVIEW] {name} — {status} ")
+        format!(" {label} {name} — {status} ")
     };
 
-    let border_color = if is_focused {
-        theme.active_border
-    } else {
-        Color::Magenta
-    };
     let block = Block::default()
         .title(title)
         .borders(Borders::ALL)

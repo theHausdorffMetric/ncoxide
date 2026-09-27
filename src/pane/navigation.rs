@@ -1,4 +1,4 @@
-use super::PaneState;
+use super::{FileEntry, PaneState};
 use crate::error::Result;
 
 impl PaneState {
@@ -35,6 +35,32 @@ impl PaneState {
     pub fn cursor_down(&mut self) {
         if !self.entries.is_empty() && self.cursor < self.entries.len() - 1 {
             self.cursor += 1;
+        }
+    }
+
+    /// Move up to the nearest earlier entry satisfying `pred`; the cursor
+    /// stays put when there is none. Compare mode steps over non-images
+    /// with this.
+    pub fn cursor_up_where(&mut self, pred: impl Fn(&FileEntry) -> bool) {
+        if let Some(i) = self
+            .entries
+            .get(..self.cursor)
+            .and_then(|before| before.iter().rposition(&pred))
+        {
+            self.cursor = i;
+        }
+    }
+
+    /// Move down to the nearest later entry satisfying `pred`; the cursor
+    /// stays put when there is none.
+    pub fn cursor_down_where(&mut self, pred: impl Fn(&FileEntry) -> bool) {
+        let start = self.cursor + 1;
+        if let Some(i) = self
+            .entries
+            .get(start..)
+            .and_then(|after| after.iter().position(&pred))
+        {
+            self.cursor = start + i;
         }
     }
 
@@ -158,6 +184,41 @@ mod tests {
         assert_eq!(pane.cursor, 0);
         pane.cursor_bottom();
         assert_eq!(pane.cursor, 2);
+        let _ = fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_cursor_where_skips_to_matching_entries() {
+        let tmp = make_test_dir("cursor_where");
+        for name in ["a.png", "b.txt", "c.txt", "d.png", "e.txt"] {
+            fs::write(tmp.join(name), "x").unwrap();
+        }
+        let mut pane = PaneState::new(PaneId::Left, tmp.clone());
+        let is_png = |e: &FileEntry| e.name.ends_with(".png");
+
+        pane.cursor_down_where(is_png); // a → d, over b and c
+        assert_eq!(pane.entries[pane.cursor].name, "d.png");
+        pane.cursor_down_where(is_png); // nothing after d: stays
+        assert_eq!(pane.entries[pane.cursor].name, "d.png");
+        pane.cursor_up_where(is_png); // d → a
+        assert_eq!(pane.entries[pane.cursor].name, "a.png");
+        pane.cursor_up_where(is_png); // nothing before a: stays
+        assert_eq!(pane.cursor, 0);
+
+        // From a non-matching entry both directions find the neighbours.
+        pane.cursor = 2; // c.txt
+        pane.cursor_up_where(is_png);
+        assert_eq!(pane.entries[pane.cursor].name, "a.png");
+        pane.cursor = 2;
+        pane.cursor_down_where(is_png);
+        assert_eq!(pane.entries[pane.cursor].name, "d.png");
+
+        // Empty listing: no panic, cursor untouched.
+        pane.entries.clear();
+        pane.cursor = 0;
+        pane.cursor_down_where(is_png);
+        pane.cursor_up_where(is_png);
+        assert_eq!(pane.cursor, 0);
         let _ = fs::remove_dir_all(&tmp);
     }
 

@@ -61,6 +61,7 @@ pub fn handle_key(key: KeyEvent, state: &mut NormalState) -> Action {
         KeyCode::Char('y') => Action::CopyToOther,
         KeyCode::Char('.') => Action::ToggleHidden,
         KeyCode::Char('p') | KeyCode::Char('P') => Action::TogglePreview,
+        KeyCode::Char('L') => Action::ToggleLock,
         KeyCode::Char('?') => Action::ShowHelp,
 
         // Shift+J/K: move + select

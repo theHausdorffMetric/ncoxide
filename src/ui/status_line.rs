@@ -56,8 +56,26 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("")
     };
 
+    // Compare mode hides the file list, so say so here.
+    let compare_span = if app.locked_preview.is_some() {
+        Span::styled(
+            "│  CMP  ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("")
+    };
+
+    // Cursor position as well as the count: with the list hidden (compare
+    // mode) it is the only sense of where in the directory the cursor is.
     let count_span = Span::styled(
-        format!("│  {} items  ", pane.entries.len()),
+        if pane.entries.is_empty() {
+            "│  0 items  ".to_string()
+        } else {
+            format!("│  {}/{} items  ", pane.cursor + 1, pane.entries.len())
+        },
         Style::default().fg(Color::DarkGray),
     );
 
@@ -88,6 +106,7 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         path_span,
         sel_span,
         preview_span,
+        compare_span,
         count_span,
         input_span,
     ]);

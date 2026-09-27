@@ -10,7 +10,7 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::Rect;
+use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::Picker;
 
 use crate::config::Config;
@@ -22,7 +22,7 @@ use crate::mode::{Action, InputKind, Mode};
 use crate::pane::operations;
 use crate::pane::{PaneId, PaneState, SortBy, SortDirection};
 use crate::platform;
-use crate::preview::{self, ImageJob, ImageWorker, PreviewState};
+use crate::preview::{self, ImageJob, ImageSlot, ImageWorker, PreviewState};
 use crate::ui;
 
 /// How long the cursor must rest on an image before it is decoded, so a
@@ -47,6 +47,10 @@ pub struct App {
     pub preview_active: bool,
     pub preview_focused: bool,
     pub preview_state: PreviewState,
+    /// The picture pinned with `L`: drawn in place of the file list while
+    /// the live preview keeps following the cursor (compare mode). A path,
+    /// not a cursor — it survives directory changes.
+    pub locked_preview: Option<PreviewState>,
     pub config: Config,
     finder: Finder,
     /// Background walk for the current finder session; keystrokes re-score
@@ -78,6 +82,65 @@ enum PendingExternal {
     Edit(PathBuf),
 }
 
+/// What requesting an image encode needs from `App` besides the slot's own
+/// `PreviewState`, split out so the live and the locked preview can be
+/// pumped in turn without borrowing `App` twice.
+struct EncodeCtx<'a> {
+    picker: Option<&'a Picker>,
+    worker: Option<&'a ImageWorker>,
+    /// `[preview] image_max_bytes`.
+    limit: u64,
+    generation: &'a mut u64,
+}
+
+impl EncodeCtx<'_> {
+    /// Request an encode for `slot` when `state` is an image with no payload
+    /// for `target` and nothing in flight; otherwise record why none will
+    /// come. Notes are set at once; only the decode request itself waits
+    /// for `debounced` (the cursor has rested). Returns true when the view
+    /// changed.
+    fn pump_slot(
+        &mut self,
+        state: &mut PreviewState,
+        slot: ImageSlot,
+        target: Size,
+        debounced: bool,
+    ) -> bool {
+        if target.width == 0 || target.height == 0 || !state.image_wants_encode(target) {
+            return false;
+        }
+        let (Some(picker), Some(worker)) = (self.picker, self.worker) else {
+            state.set_image_note("image preview off ([preview] images)".into());
+            return true;
+        };
+        let Some((path, bytes)) = state.path.clone().zip(state.image_meta().map(|m| m.bytes))
+        else {
+            return false;
+        };
+        if bytes > self.limit {
+            state.set_image_note(format!(
+                "not decoded: {} exceeds [preview] image_max_bytes ({})",
+                platform::format_file_size(bytes),
+                platform::format_file_size(self.limit)
+            ));
+            return true;
+        }
+        if !debounced {
+            return false;
+        }
+        *self.generation += 1;
+        state.mark_image_requested(*self.generation, target);
+        worker.submit(ImageJob {
+            slot,
+            generation: *self.generation,
+            path,
+            target,
+            picker: picker.clone(),
+        });
+        true
+    }
+}
+
 impl App {
     /// Construct with default configuration (used by tests and as a fallback).
     pub fn new(left_path: PathBuf, right_path: PathBuf) -> Self {
@@ -107,6 +170,7 @@ impl App {
             preview_active: false,
             preview_focused: false,
             preview_state: PreviewState::default(),
+            locked_preview: None,
             config,
             finder: Finder::new(),
             finder_walk: None,
@@ -457,8 +521,8 @@ impl App {
                 }
                 // SwitchPane / FocusLeft / FocusRight toggle focus (handled below)
                 Action::SwitchPane | Action::FocusLeftPane | Action::FocusRightPane => {}
-                // Quit and TogglePreview pass through
-                Action::Quit | Action::TogglePreview => {}
+                // Quit, TogglePreview and ToggleLock pass through
+                Action::Quit | Action::TogglePreview | Action::ToggleLock => {}
                 // Everything else is a no-op when preview is focused
                 _ => return,
             }
@@ -468,7 +532,16 @@ impl App {
             Action::None => {}
             Action::Quit => self.should_quit = true,
 
-            // Navigation
+            // Navigation. While a picture is locked, `j`/`k` step over
+            // non-images: compare mode is about pictures, and a sidecar
+            // file beside the locked photo is noise. Paging and gg/G jump
+            // as usual.
+            Action::CursorUp if self.locked_preview.is_some() => {
+                self.active_pane_mut().cursor_up_where(Self::is_image_entry)
+            }
+            Action::CursorDown if self.locked_preview.is_some() => self
+                .active_pane_mut()
+                .cursor_down_where(Self::is_image_entry),
             Action::CursorUp => self.active_pane_mut().cursor_up(),
             Action::CursorDown => self.active_pane_mut().cursor_down(),
             Action::CursorTop => self.active_pane_mut().cursor_top(),
@@ -619,6 +692,7 @@ impl App {
 
             // Preview mode
             Action::TogglePreview => self.toggle_preview(),
+            Action::ToggleLock => self.toggle_lock(),
             Action::ViewFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
                     && !entry.is_dir
@@ -1047,7 +1121,40 @@ impl App {
         } else {
             self.preview_focused = false;
             self.preview_state.clear();
+            self.locked_preview = None;
         }
+    }
+
+    /// The cheap per-entry test compare-mode navigation steps with.
+    fn is_image_entry(entry: &crate::pane::FileEntry) -> bool {
+        !entry.is_dir && preview::image::has_image_extension(&entry.path)
+    }
+
+    /// `L`: lock the image under the cursor for side-by-side compare. On the
+    /// locked image itself: unlock. On another image: re-lock to it. On
+    /// anything that is not an image (by header, not extension): no-op.
+    /// Locking turns the preview on, since the lock is drawn in its layout.
+    fn toggle_lock(&mut self) {
+        let Some(entry) = self.active_pane_state().current_entry().cloned() else {
+            return;
+        };
+        if self.locked_preview.as_ref().and_then(|l| l.path.as_deref())
+            == Some(entry.path.as_path())
+        {
+            self.locked_preview = None;
+            return;
+        }
+        if entry.is_dir || preview::image::probe(&entry.path).is_none() {
+            return;
+        }
+        if !self.preview_active {
+            self.preview_active = true;
+            self.update_preview();
+        }
+        // A fresh state for the locked half: it decodes once for its own
+        // cell size (no debounce — the target only changes on lock or
+        // resize) while the live half keeps whatever it already has.
+        self.locked_preview = Some(preview::load_preview(&entry.path));
     }
 
     fn update_preview(&mut self) {
@@ -1071,68 +1178,60 @@ impl App {
     }
 
     /// Drive image previews from the event loop: apply finished encodes,
-    /// then request one when the previewed image has no payload for the
-    /// pane's current inner size (first show, or after a resize). Returns
-    /// true when the frame needs redrawing.
+    /// then request one for each on-screen picture that has no payload for
+    /// its half's current inner size (first show, or after a resize). The
+    /// live half is debounced; the locked half is not — its target only
+    /// changes on lock or resize. Returns true when the frame needs
+    /// redrawing.
     fn pump_images(&mut self, area: Rect) -> bool {
         let mut changed = false;
         if let Some(worker) = &self.image_worker {
             while let Some(result) = worker.try_recv() {
-                changed |= self.preview_state.apply_image_result(result);
+                changed |= match result.slot {
+                    ImageSlot::Live => self.preview_state.apply_image_result(result),
+                    ImageSlot::Locked => self
+                        .locked_preview
+                        .as_mut()
+                        .is_some_and(|l| l.apply_image_result(result)),
+                };
             }
         }
         if !self.preview_active {
             return changed;
         }
+        let mut ctx = EncodeCtx {
+            picker: self.picker.as_ref(),
+            worker: self.image_worker.as_ref(),
+            limit: self.config.preview.image_max_bytes,
+            generation: &mut self.image_generation,
+        };
+        let rested = self.preview_changed_at.elapsed() >= IMAGE_DEBOUNCE;
         let target = ui::layout::preview_inner(area, self.active_pane).as_size();
-        if target.width == 0 || target.height == 0 || !self.preview_state.image_wants_encode(target)
-        {
-            return changed;
+        changed |= ctx.pump_slot(&mut self.preview_state, ImageSlot::Live, target, rested);
+        if let Some(locked) = &mut self.locked_preview {
+            let target = ui::layout::preview_inner(area, self.active_pane.other()).as_size();
+            changed |= ctx.pump_slot(locked, ImageSlot::Locked, target, true);
         }
-        let (Some(picker), Some(worker)) = (&self.picker, &self.image_worker) else {
-            self.preview_state
-                .set_image_note("image preview off ([preview] images)".into());
-            return true;
-        };
-        if self.preview_changed_at.elapsed() < IMAGE_DEBOUNCE {
-            return changed;
-        }
-        let Some((path, bytes)) = self
-            .preview_state
-            .path
-            .clone()
-            .zip(self.preview_state.image_meta().map(|m| m.bytes))
-        else {
-            return changed;
-        };
-        let limit = self.config.preview.image_max_bytes;
-        if bytes > limit {
-            self.preview_state.set_image_note(format!(
-                "not decoded: {} exceeds [preview] image_max_bytes ({})",
-                platform::format_file_size(bytes),
-                platform::format_file_size(limit)
-            ));
-            return true;
-        }
-        self.image_generation += 1;
-        self.preview_state
-            .mark_image_requested(self.image_generation, target);
-        worker.submit(ImageJob {
-            generation: self.image_generation,
-            path,
-            target,
-            picker: picker.clone(),
-        });
-        true
+        changed
     }
 
     /// A file operation changed the filesystem: drop the preview's by-path
     /// cache and rebuild, so a previewed directory reflects the op
     /// immediately. Needed explicitly because the dialog-confirm key path
-    /// bypasses `dispatch_action`'s trailing `update_preview`.
+    /// bypasses `dispatch_action`'s trailing `update_preview`. A locked
+    /// picture whose file is gone (deleted — the worse of two shots — or
+    /// moved) is unlocked here too.
     fn invalidate_preview(&mut self) {
         self.preview_state.path = None;
         self.update_preview();
+        if self
+            .locked_preview
+            .as_ref()
+            .and_then(|l| l.path.as_deref())
+            .is_some_and(|p| !p.exists())
+        {
+            self.locked_preview = None;
+        }
     }
 
     fn enter_finder(&mut self) {
@@ -1862,6 +1961,198 @@ mod integration {
         let text = preview_text(&app);
         assert!(text.contains("image_max_bytes"), "{text}");
         assert!(app.preview_state.encoded_image().is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Pump until both halves hold a payload for their `area` size (compare
+    /// mode). Times out — and fails — if one slot is starved, which is what
+    /// the old newest-job-only worker did after a resize.
+    fn pump_until_both_encoded(app: &mut App, area: Rect) {
+        let live = crate::ui::layout::preview_inner(area, app.active_pane).as_size();
+        let locked = crate::ui::layout::preview_inner(area, app.active_pane.other()).as_size();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            app.pump_images(area);
+            let live_ok = app
+                .preview_state
+                .encoded_image()
+                .is_some_and(|e| e.target == live);
+            let locked_ok = app
+                .locked_preview
+                .as_ref()
+                .and_then(|l| l.encoded_image())
+                .is_some_and(|e| e.target == locked);
+            if live_ok && locked_ok {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        panic!(
+            "compare halves never both encoded: live={:?} locked={:?}",
+            app.preview_state.encoded_image(),
+            app.locked_preview.as_ref().and_then(|l| l.encoded_image())
+        );
+    }
+
+    /// Split a rendered frame into its left and right halves (the two panes).
+    fn halves(screen: &str, w: u16) -> (String, String) {
+        let mid = (w / 2) as usize;
+        screen
+            .lines()
+            .fold((String::new(), String::new()), |(mut l, mut r), line| {
+                let chars: Vec<char> = line.chars().collect();
+                l.extend(chars.iter().take(mid));
+                l.push('\n');
+                r.extend(chars.iter().skip(mid));
+                r.push('\n');
+                (l, r)
+            })
+    }
+
+    fn locked_path(app: &App) -> Option<&Path> {
+        app.locked_preview.as_ref().and_then(|l| l.path.as_deref())
+    }
+
+    #[test]
+    fn test_lock_compares_side_by_side_and_skips_non_images() {
+        let (dir, mut app) = app_with("lock", &["b.txt"]);
+        write_png(&dir.join("a.png"), 40, 24);
+        write_png(&dir.join("c.png"), 40, 24);
+        let _ = app.left_pane.refresh();
+        app.enable_images(Picker::halfblocks());
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+
+        // `L` with the preview off turns it on and locks a.png (cursor 0).
+        app.handle_key(key('L'));
+        assert!(app.preview_active);
+        assert_eq!(locked_path(&app), Some(dir.join("a.png").as_path()));
+
+        let area = Rect::new(0, 0, 80, 24);
+        pump_until_both_encoded(&mut app, area);
+        let screen = render(&app, 80, 24);
+        let (left, right) = halves(&screen, 80);
+        assert!(left.contains("[LOCKED] a.png"), "{screen}");
+        assert!(right.contains("[PREVIEW] a.png"), "{screen}");
+        assert!(left.contains('▄') && right.contains('▄'), "{screen}");
+        assert!(!left.contains("b.txt"), "file list hidden while locked");
+        assert!(
+            screen.contains("CMP") && screen.contains("1/3 items"),
+            "{screen}"
+        );
+
+        // `j` steps over b.txt straight to c.png; another `j` has nowhere
+        // to go. `k` comes back to a.png the same way.
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "c.png");
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "c.png");
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+        pump_until_both_encoded(&mut app, area);
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("[LOCKED] a.png") && screen.contains("[PREVIEW] c.png"));
+        assert!(screen.contains("3/3 items"), "{screen}");
+        app.handle_key(key('k'));
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "a.png");
+
+        // A resize invalidates both payloads and both get re-encoded: the
+        // per-slot coalescing regression test.
+        let wider = Rect::new(0, 0, 120, 30);
+        assert!(!render(&app, 120, 30).contains('▄'));
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+        pump_until_both_encoded(&mut app, wider);
+        let (left, right) = halves(&render(&app, 120, 30), 120);
+        assert!(left.contains('▄') && right.contains('▄'));
+
+        // Overlays hide both pictures.
+        app.handle_key(key('?'));
+        assert!(!render(&app, 120, 30).contains('▄'));
+        app.handle_key(code(KeyCode::Esc));
+        assert!(render(&app, 120, 30).contains('▄'));
+
+        // `L` on the locked image unlocks: the file list is back, CMP gone.
+        app.handle_key(key('L'));
+        assert!(app.locked_preview.is_none());
+        assert!(app.preview_active, "unlock keeps the preview");
+        let screen = render(&app, 80, 24);
+        assert!(
+            screen.contains("b.txt") && !screen.contains("CMP"),
+            "{screen}"
+        );
+        // Plain navigation again: `j` lands on b.txt.
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "b.txt");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lock_relocks_ignores_non_images_and_drops_with_preview() {
+        let (dir, mut app) = app_with("relock", &["b.txt"]);
+        write_png(&dir.join("a.png"), 8, 8);
+        write_png(&dir.join("c.png"), 8, 8);
+        // A text file wearing an image extension must not lock either.
+        fs::write(dir.join("d.png"), b"not a png\n").unwrap();
+        let _ = app.left_pane.refresh();
+
+        // `L` on b.txt: nothing happens (preview stays off too).
+        app.handle_key(key('j'));
+        app.handle_key(key('L'));
+        assert!(app.locked_preview.is_none() && !app.preview_active);
+
+        // Lock a.png, then `L` on c.png re-locks to c.png.
+        app.handle_key(key('k'));
+        app.handle_key(key('L'));
+        assert_eq!(locked_path(&app), Some(dir.join("a.png").as_path()));
+        app.handle_key(key('j')); // skips b.txt
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "c.png");
+        app.handle_key(key('L'));
+        assert_eq!(locked_path(&app), Some(dir.join("c.png").as_path()));
+
+        // d.png is skipped by neither j nor the lock gate... j uses the
+        // extension (cheap) so it lands there; `L` probes the header and
+        // refuses, keeping the current lock.
+        app.handle_key(key('j'));
+        assert_eq!(app.left_pane.entries[app.left_pane.cursor].name, "d.png");
+        app.handle_key(key('L'));
+        assert_eq!(locked_path(&app), Some(dir.join("c.png").as_path()));
+
+        // Esc keeps the lock; `p` (preview off) drops it.
+        app.handle_key(code(KeyCode::Esc));
+        assert!(app.locked_preview.is_some());
+        app.handle_key(key('p'));
+        assert!(!app.preview_active && app.locked_preview.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_lock_survives_cd_and_drops_when_the_file_vanishes() {
+        let (dir, mut app) = app_with("lock_cd", &[]);
+        let sub = dir.join("sub");
+        fs::create_dir_all(&sub).unwrap();
+        write_png(&sub.join("a.png"), 8, 8);
+        fs::write(dir.join("z.txt"), b"x").unwrap();
+        let _ = app.left_pane.refresh();
+
+        app.handle_key(key('l')); // enter sub/
+        assert_eq!(app.left_pane.cwd, sub);
+        app.handle_key(key('L'));
+        let a = sub.join("a.png");
+        assert_eq!(locked_path(&app), Some(a.as_path()));
+
+        // Back to the parent: the lock is a path, it stays.
+        app.handle_key(key('h'));
+        assert_eq!(app.left_pane.cwd, dir);
+        assert_eq!(locked_path(&app), Some(a.as_path()));
+        let screen = render(&app, 80, 24);
+        assert!(screen.contains("[LOCKED] a.png"), "{screen}");
+
+        // Delete the locked file behind the app's back; the next refresh
+        // (any file op or view-setting change) drops the lock.
+        fs::remove_file(&a).unwrap();
+        app.handle_key(key('.'));
+        assert!(app.locked_preview.is_none());
 
         let _ = fs::remove_dir_all(&dir);
     }
