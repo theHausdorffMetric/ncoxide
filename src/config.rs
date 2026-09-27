@@ -12,6 +12,7 @@ pub struct Config {
     pub general: GeneralConfig,
     pub colors: ColorConfig,
     pub preview: PreviewConfig,
+    pub web: WebConfig,
     pub bookmarks: Vec<PathBuf>,
 }
 
@@ -62,6 +63,31 @@ impl Default for PreviewConfig {
             images: "auto".into(),
             image_font_size: None,
             image_max_bytes: 64 * 1024 * 1024,
+        }
+    }
+}
+
+/// `[web]` — the compare companion page (`Space w`), a loopback HTTP server
+/// that shows the locked and the live picture in a browser.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// Port on `127.0.0.1` (never another address). Fixed by default so an
+    /// SSH `LocalForward` can be set up once; `0` picks any free port. If
+    /// the fixed port is taken the server falls back to a free one and the
+    /// dialog shows the actual URL.
+    pub port: u16,
+    /// Run `xdg-open` on the page when this machine has a display and the
+    /// session is not over SSH; otherwise the URL is shown to copy.
+    pub open_browser: bool,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        WebConfig {
+            // "NCOX" on a phone keypad; unlikely to collide with anything.
+            port: 6269,
+            open_browser: true,
         }
     }
 }
@@ -169,6 +195,17 @@ mod tests {
         let defaults = Config::default();
         assert_eq!(defaults.preview.images, "auto");
         assert!(defaults.preview.image_font_size.is_none());
+    }
+
+    #[test]
+    fn test_web_config_parse_and_defaults() {
+        let config: Config = toml::from_str("[web]\nport = 0\nopen_browser = false\n").unwrap();
+        assert_eq!(config.web.port, 0);
+        assert!(!config.web.open_browser);
+
+        let defaults = Config::default();
+        assert_eq!(defaults.web.port, 6269);
+        assert!(defaults.web.open_browser);
     }
 
     #[test]

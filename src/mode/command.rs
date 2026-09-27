@@ -39,6 +39,33 @@ pub fn execute_command(cmd: &str) -> Action {
             Some("show_hidden") => Action::ToggleHidden,
             _ => Action::None,
         },
+        // `:web` starts the compare page (or shows its URL again);
+        // `:web stop` shuts the server down.
+        Some("web") => match parts.get(1).map(|s| s.trim()) {
+            None | Some("") => Action::OpenWeb,
+            Some("stop" | "off" | "close") => Action::CloseWeb,
+            _ => Action::None,
+        },
         _ => Action::None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_execute_command_parses_web_and_friends() {
+        assert!(matches!(execute_command("web"), Action::OpenWeb));
+        assert!(matches!(execute_command("  web  "), Action::OpenWeb));
+        assert!(matches!(execute_command("web stop"), Action::CloseWeb));
+        assert!(matches!(execute_command("web off"), Action::CloseWeb));
+        assert!(matches!(execute_command("web whatever"), Action::None));
+        assert!(matches!(execute_command("q"), Action::Quit));
+        assert!(matches!(
+            execute_command("sort size"),
+            Action::SetSort(crate::pane::SortBy::Size)
+        ));
+        assert!(matches!(execute_command("nonsense"), Action::None));
     }
 }

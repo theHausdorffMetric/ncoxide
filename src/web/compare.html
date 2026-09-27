@@ -1,0 +1,143 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ncoxide compare</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font: 13px/1.4 system-ui, sans-serif; }
+  body { display: flex; flex-direction: column; }
+  header { display: flex; gap: .6rem; align-items: center; padding: .4rem .8rem; background: #1b1b1b; border-bottom: 1px solid #333; }
+  header b { color: #9cf; margin-right: .4rem; }
+  header button { background: #2a2a2a; color: #ddd; border: 1px solid #444; border-radius: 4px; padding: .2rem .7rem; cursor: pointer; font: inherit; }
+  header button.on { background: #3a5; color: #000; border-color: #3a5; }
+  header button:disabled { opacity: .4; cursor: default; }
+  header kbd { color: #777; font: inherit; margin-left: .25rem; }
+  #status { margin-left: auto; color: #888; }
+  #status.err { color: #f66; }
+  main { flex: 1; display: grid; grid-template-columns: 1fr 1fr; gap: 2px; min-height: 0; background: #333; }
+  main.single { grid-template-columns: 1fr; }
+  .pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: #111; }
+  .cap { padding: .3rem .6rem; background: #161616; color: #bbb; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cap b { color: #eee; }
+  #locked .cap b { color: #fd5; }
+  .cap b.empty { color: #666; font-style: italic; font-weight: normal; }
+  .cap small { color: #777; margin-left: .6rem; }
+  .box { flex: 1; min-height: 0; overflow: hidden; display: flex; align-items: center; justify-content: center; position: relative; }
+  .box img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+  .box img:not([src]) { display: none; }
+  /* 1:1 — natural size, both panes scroll together */
+  body.one .box { overflow: auto; display: block; }
+  body.one .box img { max-width: none; max-height: none; }
+  /* diff — the live picture over the locked one, blended as difference */
+  body.diff main { grid-template-columns: 1fr; }
+  body.diff #live { display: none; }
+  body.diff #locked .box img, body.diff #diffimg { position: absolute; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: contain; }
+  #diffimg { display: none; mix-blend-mode: difference; }
+  body.diff #diffimg[src] { display: block; }
+</style>
+</head>
+<body class="fit">
+<header>
+  <b>ncoxide</b>
+  <button data-mode="fit" class="on">Fit<kbd>f</kbd></button>
+  <button data-mode="one">1:1<kbd>1</kbd></button>
+  <button data-mode="diff" id="diffbtn">Diff<kbd>d</kbd></button>
+  <span id="status">connecting…</span>
+</header>
+<main id="main" class="single">
+  <section class="pane" id="locked">
+    <div class="cap"><b class="empty">nothing locked</b><small></small></div>
+    <div class="box"><img alt=""><img id="diffimg" alt=""></div>
+  </section>
+  <section class="pane" id="live">
+    <div class="cap"><b class="empty">no image under the cursor</b><small></small></div>
+    <div class="box"><img alt=""></div>
+  </section>
+</main>
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const panes = { locked: $('#locked'), live: $('#live') };
+  const diffimg = $('#diffimg');
+  const status = $('#status');
+  const buttons = [...document.querySelectorAll('header button')];
+  let generation = -1;
+  let hasLocked = false;
+
+  function setMode(mode) {
+    if (mode === 'diff' && !hasLocked) return;
+    document.body.className = mode;
+    buttons.forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
+  }
+  buttons.forEach(b => b.onclick = () => setMode(b.dataset.mode));
+  addEventListener('keydown', e => {
+    if (e.key === 'f') setMode('fit');
+    if (e.key === '1') setMode('one');
+    if (e.key === 'd') setMode('diff');
+  });
+
+  // 1:1 mode: scrolling one pane scrolls the other to the same spot.
+  let syncing = false;
+  for (const [key, pane] of Object.entries(panes)) {
+    pane.querySelector('.box').addEventListener('scroll', e => {
+      if (syncing) return;
+      syncing = true;
+      const other = panes[key === 'locked' ? 'live' : 'locked'].querySelector('.box');
+      other.scrollLeft = e.target.scrollLeft;
+      other.scrollTop = e.target.scrollTop;
+      syncing = false;
+    });
+  }
+
+  function show(key, ref, g) {
+    const pane = panes[key];
+    const name = pane.querySelector('.cap b');
+    const facts = pane.querySelector('.cap small');
+    const img = pane.querySelector('.box > img:not(#diffimg)');
+    if (!ref) {
+      name.textContent = key === 'locked' ? 'nothing locked' : 'no image under the cursor';
+      name.className = 'empty';
+      facts.textContent = '';
+      pane.querySelector('.cap').title = '';
+      img.removeAttribute('src');
+      return;
+    }
+    name.textContent = ref.name;
+    name.className = '';
+    facts.textContent = ref.summary;
+    pane.querySelector('.cap').title = ref.path;
+    img.src = `img/${key}?g=${g}`;
+  }
+
+  async function poll() {
+    try {
+      const r = await fetch('state', { cache: 'no-store' });
+      if (!r.ok) throw new Error(r.status);
+      const s = await r.json();
+      status.textContent = '';
+      status.className = '';
+      if (s.generation !== generation) {
+        generation = s.generation;
+        hasLocked = !!s.locked;
+        $('#main').classList.toggle('single', !hasLocked);
+        panes.locked.style.display = hasLocked ? '' : 'none';
+        $('#diffbtn').disabled = !hasLocked;
+        show('locked', s.locked, generation);
+        show('live', s.live, generation);
+        if (hasLocked && s.live) diffimg.src = `img/live?g=${generation}`;
+        else diffimg.removeAttribute('src');
+        if (!hasLocked && document.body.className === 'diff') setMode('fit');
+      }
+    } catch (e) {
+      status.textContent = 'ncoxide is not reachable — is it still running?';
+      status.className = 'err';
+    }
+    setTimeout(poll, 250);
+  }
+  poll();
+})();
+</script>
+</body>
+</html>

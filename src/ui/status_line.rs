@@ -68,6 +68,18 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("")
     };
 
+    // The compare page's server is running (`Space w`); `:web stop` ends it.
+    let web_span = if app.web.is_some() {
+        Span::styled(
+            "│  WEB  ",
+            Style::default()
+                .fg(Color::LightBlue)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else {
+        Span::raw("")
+    };
+
     // Cursor position as well as the count: with the list hidden (compare
     // mode) it is the only sense of where in the directory the cursor is.
     let count_span = Span::styled(
@@ -107,6 +119,7 @@ pub fn draw_status_line(f: &mut Frame, app: &App, area: Rect) {
         sel_span,
         preview_span,
         compare_span,
+        web_span,
         count_span,
         input_span,
     ]);

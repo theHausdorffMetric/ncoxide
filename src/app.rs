@@ -24,6 +24,7 @@ use crate::pane::{PaneId, PaneState, SortBy, SortDirection};
 use crate::platform;
 use crate::preview::{self, ImageJob, ImageSlot, ImageWorker, PreviewState};
 use crate::ui;
+use crate::web::{self, ImageRef, WebServer};
 
 /// How long the cursor must rest on an image before it is decoded, so a
 /// held `j` over a photo folder decodes only where it stops.
@@ -51,6 +52,10 @@ pub struct App {
     /// the live preview keeps following the cursor (compare mode). A path,
     /// not a cursor — it survives directory changes.
     pub locked_preview: Option<PreviewState>,
+    /// The compare companion page's server while it runs (`Space w`). It
+    /// follows the cursor even with the terminal preview off, so the
+    /// browser can be the viewer while the terminal shows the list.
+    pub web: Option<WebServer>,
     pub config: Config,
     finder: Finder,
     /// Background walk for the current finder session; keystrokes re-score
@@ -171,6 +176,7 @@ impl App {
             preview_focused: false,
             preview_state: PreviewState::default(),
             locked_preview: None,
+            web: None,
             config,
             finder: Finder::new(),
             finder_walk: None,
@@ -693,6 +699,8 @@ impl App {
             // Preview mode
             Action::TogglePreview => self.toggle_preview(),
             Action::ToggleLock => self.toggle_lock(),
+            Action::OpenWeb => self.open_web(),
+            Action::CloseWeb => self.web = None,
             Action::ViewFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
                     && !entry.is_dir
@@ -720,6 +728,7 @@ impl App {
 
         // Update preview when cursor changes
         self.update_preview();
+        self.sync_web();
     }
 
     fn handle_input_confirm(&mut self) {
@@ -1232,6 +1241,75 @@ impl App {
         {
             self.locked_preview = None;
         }
+        self.sync_web();
+    }
+
+    /// `Space w` / `:web`: start the compare companion page if it is not
+    /// running, publish the current pictures, and show the URL — opening a
+    /// browser only when one is on this machine (see `web::open_in_browser`).
+    /// If the configured port is taken, fall back to any free one; the
+    /// dialog shows whatever was bound.
+    fn open_web(&mut self) {
+        if self.web.is_none() {
+            let port = self.config.web.port;
+            let started = WebServer::start(port).or_else(|e| {
+                if port == 0 {
+                    return Err(e);
+                }
+                log::warn!("compare page: port {port} unavailable ({e}), using a free one");
+                WebServer::start(0)
+            });
+            match started {
+                Ok(server) => self.web = Some(server),
+                Err(e) => {
+                    self.dialog = Some(Dialog::Error {
+                        message: format!("Cannot start the compare page: {e}"),
+                    });
+                    return;
+                }
+            }
+        }
+        self.sync_web();
+        let url = self
+            .web
+            .as_ref()
+            .map(|w| w.url().to_string())
+            .unwrap_or_default();
+        let opened = self.config.web.open_browser && web::open_in_browser(&url);
+        let hint = if opened {
+            "Opened in your browser. `:web stop` shuts it down."
+        } else {
+            "Open it in a browser on the machine this terminal runs on, or \
+             forward the port over SSH (see README). `:web stop` shuts it down."
+        };
+        self.dialog = Some(Dialog::Info {
+            title: "Compare page".into(),
+            message: format!("{url}\n\n{hint}"),
+        });
+    }
+
+    /// Tell the companion page what to show: the locked picture, and as the
+    /// live one whatever the preview shows — or, with the preview off, the
+    /// image under the cursor (a header probe per keystroke, as the preview
+    /// itself does). No-op while the server is not running.
+    fn sync_web(&mut self) {
+        let Some(server) = &self.web else {
+            return;
+        };
+        let live = if self.preview_active {
+            Self::image_ref(&self.preview_state)
+        } else {
+            self.active_pane_state()
+                .current_entry()
+                .filter(|e| Self::is_image_entry(e))
+                .and_then(|e| preview::image::probe(&e.path).map(|m| ImageRef::new(&e.path, &m)))
+        };
+        let locked = self.locked_preview.as_ref().and_then(Self::image_ref);
+        server.publish(locked, live);
+    }
+
+    fn image_ref(state: &PreviewState) -> Option<ImageRef> {
+        Some(ImageRef::new(state.path.as_deref()?, state.image_meta()?))
     }
 
     fn enter_finder(&mut self) {
@@ -2153,6 +2231,94 @@ mod integration {
         fs::remove_file(&a).unwrap();
         app.handle_key(key('.'));
         assert!(app.locked_preview.is_none());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Fetch the companion page's state JSON over a raw socket.
+    fn web_state(app: &App) -> String {
+        use std::io::{Read, Write};
+        let server = app.web.as_ref().expect("web server running");
+        let url = server.url();
+        let path = url.trim_start_matches("http://127.0.0.1:");
+        let (_, path) = path.split_once('/').unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", server.port())).unwrap();
+        write!(
+            s,
+            "GET /{path}state HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            server.port()
+        )
+        .unwrap();
+        let mut raw = String::new();
+        s.read_to_string(&mut raw).unwrap();
+        raw.split("\r\n\r\n").nth(1).unwrap_or("").to_string()
+    }
+
+    #[test]
+    fn test_web_page_follows_cursor_and_lock() {
+        let (dir, mut app) = app_with("web", &["b.txt"]);
+        write_png(&dir.join("a.png"), 6, 4);
+        write_png(&dir.join("c.png"), 6, 4);
+        let _ = app.left_pane.refresh();
+        // Tests must never pop a browser; a free port keeps them parallel.
+        app.config.web.open_browser = false;
+        app.config.web.port = 0;
+
+        // `Space w` starts the server and shows the URL; the status line
+        // says WEB. With the preview off, the live picture is the image
+        // under the cursor.
+        app.handle_key(key(' '));
+        app.handle_key(key('w'));
+        let server_url = app.web.as_ref().expect("started").url().to_string();
+        match &app.dialog {
+            Some(Dialog::Info { title, message }) => {
+                assert_eq!(title, "Compare page");
+                assert!(message.contains(&server_url), "{message}");
+                assert!(message.contains("forward the port"), "{message}");
+            }
+            other => panic!("expected the URL dialog, got {other:?}"),
+        }
+        assert!(render(&app, 100, 24).contains("WEB"));
+        assert!(
+            render(&app, 100, 24).contains(&server_url),
+            "URL on one row"
+        );
+        let state = web_state(&app);
+        assert!(state.contains("\"locked\":null"), "{state}");
+        assert!(state.contains("\"name\":\"a.png\""), "{state}");
+
+        // Moving onto a text file: no live picture. Onto c.png: c.png.
+        app.handle_key(code(KeyCode::Esc)); // dismiss the dialog
+        app.handle_key(key('j'));
+        assert!(web_state(&app).contains("\"live\":null"));
+        app.handle_key(key('j'));
+        assert!(web_state(&app).contains("\"name\":\"c.png\""));
+
+        // Lock c.png (preview comes on), step back: locked c, live a.
+        app.handle_key(key('L'));
+        app.handle_key(key('k'));
+        let state = web_state(&app);
+        assert!(
+            state.contains("\"locked\":{\"name\":\"c.png\"")
+                && state.contains("\"live\":{\"name\":\"a.png\""),
+            "{state}"
+        );
+        // Unlock: generation moves, locked is null again.
+        app.handle_key(key('j'));
+        app.handle_key(key('L'));
+        assert!(web_state(&app).contains("\"locked\":null"));
+
+        // `Space w` again only shows the URL (same server). `:web stop`
+        // shuts it down and the badge goes.
+        app.handle_key(key(' '));
+        app.handle_key(key('w'));
+        assert_eq!(app.web.as_ref().unwrap().url(), server_url);
+        app.handle_key(code(KeyCode::Esc));
+        app.handle_key(key(':'));
+        type_str(&mut app, "web stop");
+        app.handle_key(code(KeyCode::Enter));
+        assert!(app.web.is_none());
+        assert!(!render(&app, 100, 24).contains("WEB"));
 
         let _ = fs::remove_dir_all(&dir);
     }

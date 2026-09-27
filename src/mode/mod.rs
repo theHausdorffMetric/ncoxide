@@ -132,4 +132,9 @@ pub enum Action {
     /// Lock the image under the cursor for side-by-side compare (again on
     /// the locked image: unlock; on another image: re-lock).
     ToggleLock,
+    /// Start the compare companion page (loopback HTTP) if needed and show
+    /// its URL.
+    OpenWeb,
+    /// Stop the companion page's server.
+    CloseWeb,
 }

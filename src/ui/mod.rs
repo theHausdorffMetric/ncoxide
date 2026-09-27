@@ -96,6 +96,7 @@ fn space_menu_overlay(f: &mut Frame) {
         ("e", "Edit with $EDITOR"),
         ("v", "View file (pager)"),
         ("l", "Lock image (compare)"),
+        ("w", "Compare page in browser"),
         ("f", "Fuzzy find file"),
         ("s", "Sort menu"),
         ("i", "File info"),

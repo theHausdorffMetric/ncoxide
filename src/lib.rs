@@ -9,3 +9,4 @@ pub mod platform;
 pub mod preview;
 pub mod ui;
 pub mod viewer;
+pub mod web;
