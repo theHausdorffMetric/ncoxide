@@ -157,6 +157,7 @@ registers; the implementation deliberately went dual-pane-native instead.)
 | `e` | Edit with $EDITOR |
 | `v` | View file (built-in pager) |
 | `l` | Lock image for compare (same as `L`) |
+| `w` | Compare page in the browser (loopback HTTP; `:web stop` ends it) |
 | `f` | Fuzzy file finder |
 | `s` | Sort menu (via command line) |
 | `i` | File info |
@@ -183,6 +184,7 @@ registers; the implementation deliberately went dual-pane-native instead.)
 | `:filter <pattern>` | Filter visible files (no pattern clears) |
 | `:cd <path>` | Change directory (no path: home) |
 | `:set show_hidden` | Toggle setting |
+| `:web` / `:web stop` | Start (or show the URL of) / stop the compare page |
 
 (`:shell` remains unimplemented — see "What's Not Yet Implemented".)
 
@@ -211,6 +213,19 @@ registers; the implementation deliberately went dual-pane-native instead.)
   when its file vanishes, on `L` over the locked image, or on `p`. The image
   worker coalesces jobs per slot (live / locked) so a resize re-encodes
   both. See `docs/image-compare-plan.md`.
+- **Compare page** (`Space w`, `:web`): `web.rs` serves the locked and the
+  live picture to a browser from a `std::net` loopback server — full
+  resolution, fit / 1:1 with synced scrolling / difference overlay, polling
+  `state` every 250 ms and reloading only when the generation changes. The
+  live side follows the preview, or with the preview off the image under
+  the cursor. Capability design: `127.0.0.1` only, a random 128-bit token
+  in every path, exactly two picture routes (`img/locked`, `img/live`) that
+  resolve to the paths ncoxide holds (no path parameter), `Host` must be
+  the loopback origin, GET/HEAD only, `Connection: close`. TIFF/QOI are
+  transcoded to PNG; everything else is served as the file's own bytes. The
+  browser is opened only with a local display and never over SSH; the URL
+  is shown in a dialog sized so it stays on one row. `[web] port` is fixed
+  by default (6269) so an SSH `LocalForward` can be configured once.
 
 ### Module Structure
 
@@ -231,6 +246,7 @@ ncoxide/src/
 │   ├── search.rs, filter.rs — in-file search, fuzzy line filter
 │   └── image.rs         — image probe, limited decode, decode/encode worker (coalesces per live/locked slot)
 ├── viewer.rs            — Full-screen file viewer
+├── web.rs, web/compare.html — Compare page: loopback HTTP server (std::net, capability URL) + the inlined page
 ├── platform.rs          — Unix helpers (disk space, permissions, paths)
 ├── mode/
 │   ├── mod.rs           — Mode enum, InputKind enum, Action enum (~50 variants)
@@ -331,6 +347,7 @@ sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 | 7 | 0.3.0 review pass S1–S11 (`docs/review-0.3.0.md`): data-loss guard, hidden-root finder fix, panic hygiene, Helix selection semantics, dir-contents preview, background finder walk, viewport rendering, cleanup | Done |
 | 8 | Image preview via ratatui-image (`docs/image-preview-plan.md`): ratatui 0.30, terminal probe + config + `--probe-terminal`, pane preview with off-thread decode, full-screen image view | Done (branch `image-preview`, 2026-09-14) |
 | 9 | Image compare (`docs/image-compare-plan.md`): `L` locks a picture into the file-list half, live preview beside it, image-to-image `j`/`k`, per-slot worker coalescing | Code + tests done (branch `image-compare`, 2026-09-27); ships as 0.6.0 after 0.5.0 is published |
+| 10 | Compare page (`docs/image-compare-plan.md`, companion variant): `Space w` / `:web` loopback HTTP server with a capability URL, browser page with fit / 1:1 synced / diff, follows the cursor; `[web]` config; dialogs sized to content | Code + tests done (branch `image-compare`, 2026-09-27); same release |
 
 ### Public API Surface
 

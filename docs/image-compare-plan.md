@@ -2,10 +2,12 @@
 
 Status: phases 1–3 implemented on branch `image-compare` with the gate green
 (fmt, clippy `-D warnings`, 129 tests, audit), 2026-09-27; mindtask task 172
-under concept `ncoxide`. Builds on the 0.5.0 image preview
+under concept `ncoxide`. The companion page (below) followed the same day
+on the same branch (139 tests; task 173). Builds on the 0.5.0 image preview
 (`docs/image-preview-plan.md`), which must be published first (task 167);
 this ships as 0.6.0. Still to do: a real-terminal check (WezTerm over SSH,
-as for the preview) and the version bump + release.
+as for the preview), a real-browser check of the page, and the version bump
++ release.
 
 Goal: while flipping through a directory of pictures, **lock** the one under
 the cursor and keep flipping — the locked picture stays on screen beside the
@@ -106,15 +108,94 @@ from the 50 ms loop, `PreviewState` as the single preview model.
 3. Docs: README bullet + key table, `design.md` (preview-mode section, module
    notes, phase table). Release as 0.6.0 after 0.5.0 is on crates.io.
 
+## Companion page: the pictures in a browser (`Space w`, `:web`)
+
+Evaluated 2026-09-27 as "serve the locked and the live picture over local
+HTTP". Decision (Dan): the **companion** variant — the terminal compare
+stays the default, the page is an opt-in escalation for the moments the
+terminal cannot deliver: resolution, zoom, a difference overlay. Not the
+"replace" variant: ncoxide's premise is staying in the terminal, and in the
+main setup (laptop → SSH → workstation → zellij) the browser is on the
+other machine.
+
+Why it earns its place: a terminal half-pane is ~800×750 px at best; the
+browser shows the original, and one page retires three follow-ups from the
+list below (1:1 detail, orientation, a bigger viewer) plus formats the
+terminal path lacks (SVG, AVIF, PDF are the browser's problem now).
+
+### Design
+
+- `web.rs`: a `std::net` HTTP server — no crate. Four GET routes on
+  loopback do not justify one, and hand-rolling keeps every security
+  property in our hands. One thread per connection, `Connection: close`
+  on every response (browsers cope; polls are one TCP round trip on
+  loopback), 5 s read / 30 s write timeouts, requests capped at 8 KiB.
+- **Capability, not a file server:**
+  - binds `127.0.0.1` only (not configurable);
+  - every route lives under a random 128-bit token from `/dev/urandom`,
+    new per run: `http://127.0.0.1:<port>/<token>/`;
+  - exactly two picture routes, `img/locked` and `img/live`, resolving to
+    the paths ncoxide currently holds — **no path parameter**, so there is
+    nothing to traverse (tests try anyway);
+  - `Host` must be `127.0.0.1:<port>` or `localhost:<port>` (DNS
+    rebinding from a page open elsewhere is refused with 403);
+  - GET/HEAD only; wrong or missing token is a 404 like any other miss.
+  - Blast radius if the token leaks: whoever has it sees the two pictures
+    currently shown, nothing else.
+- `state` is a small hand-built JSON (`generation`, `locked`, `live` with
+  name / path / facts); the page polls it every 250 ms and reloads the
+  pictures only when the generation changed. `publish` bumps the
+  generation only on a real change, so keystrokes that do not move the
+  pictures cost nothing.
+- Pictures are served as the file's own bytes with the right media type;
+  TIFF and QOI (no browser support) are transcoded to PNG under the
+  preview's decode limits. A file that vanished after publishing is a 404.
+- **The live side follows the cursor even with the terminal preview off**
+  (a header probe per keystroke, as the preview itself does): the browser
+  can be the viewer while the terminal shows the full-width list.
+- The page (`web/compare.html`, inlined): dark, two panes with captions;
+  modes **Fit** (`f`), **1:1** (`1`, both panes scroll together), **Diff**
+  (`d`, the live picture over the locked one with
+  `mix-blend-mode: difference` — spots what changed between two exports).
+  Single-pane layout while nothing is locked; a banner when ncoxide is gone.
+- `[web] port = 6269` (fixed by default so an SSH `LocalForward` can be set
+  up once — "NCOX" on a phone keypad; `0` = any free port; if taken, falls
+  back to a free one and the dialog shows the actual URL) and
+  `open_browser = true` (`xdg-open`, only with a local display and never
+  over SSH; otherwise the URL is shown to copy — WezTerm makes it
+  clickable, and with the forward it just works on the laptop).
+- UI: `Space w` / `:web` start or show the URL; `:web stop` ends it; `WEB`
+  badge in the status line. Dialogs now size to their content (width from
+  the longest line, height from the wrapped count) so the 55-char URL stays
+  on one row.
+
+### Tests (web.rs, socket level)
+
+Routes under the token (page, state before/after publish, both pictures
+byte-identical with the right media type, HEAD, redirect to the trailing
+slash, unlock → 404); everything outside the capability (no/wrong token,
+favicon, unknown routes, traversal-shaped targets, wrong/missing `Host`,
+POST/DELETE, garbage and oversized requests → 400 without a panic);
+transcode QOI → PNG with the right dimensions, vanished file → 404 on both
+paths, undecodable file → 500; drop closes the port and a fixed port is
+honoured; JSON escaping; the browser rule as a pure function. App level:
+`Space w` starts on a free port, the URL is in the dialog and on one row,
+the state follows cursor, lock and unlock (also with the preview off),
+`:web stop` closes it. Config and command parsing.
+
 ## Follow-ups (not in this pass)
 
-- **1:1 detail toggle** (`z`): ratatui-image has `Resize::Crop`; switching
-  Fit → Crop in both slots shows the centre of each picture at native pixel
-  scale — the sharpness-comparison feature, ~20 lines once compare exists.
+- **Lock without the terminal preview.** `L` still turns the preview on,
+  because the lock is drawn in its layout. With the page open one may want
+  the list full-width and the browser as the only viewer; a "web-only
+  compare" flag would keep the preview off and only publish.
 - **Auto orientation:** on narrow/tall terminals (≲100 cols) full-width
   *stacked* halves beat side-by-side (491×368 vs 384×288 px for a 4:3 photo
   at 100×50). A `compare_regions(area, pixel_aspect)` helper could pick; adds
   a layout variant, so only if ncoxide is actually used at that width.
-- `Space v` in compare mode opening a full-screen `[locked | current]` view.
-  Gains one row over the panes; low priority.
+- **1:1 detail toggle in the terminal** (`Resize::Crop`) — superseded by the
+  page's 1:1 mode for anyone with a browser at hand; keep only if the
+  terminal-only case turns out to need it.
+- OSC 8 hyperlink for the URL in the dialog (ratatui support to be
+  verified); WezTerm's implicit URL detection covers it meanwhile.
 - Swap sides: not needed, re-lock covers it.

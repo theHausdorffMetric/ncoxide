@@ -26,6 +26,12 @@ A modal dual-pane file commander for the terminal, inspired by
   cursor, so two shots sit side by side at full height. `j`/`k` then step
   from image to image, the lock survives directory changes, `L` on another
   image re-locks, `L` on the locked one (or `p`) releases it
+- **Compare page** -- `Space w` serves the locked and the live picture on
+  `127.0.0.1` for a browser: full resolution, fit / 1:1 with synced
+  scrolling / difference overlay, following the cursor (also with the
+  terminal preview off, so the browser can be the viewer while the terminal
+  shows the list). A capability URL with a per-run token, loopback only, no
+  path parameters; `:web stop` ends it
 - **File viewer** -- full-screen pager (Space then `v`) with in-file search
   (`/`, literal or `Ctrl-R` regex, `n`/`N` to cycle matches), goto-line
   (`<N>G`), and fuzzy line-filter (`&`, powered by nucleo-matcher)
@@ -83,6 +89,7 @@ ncoxide --left ~/projects --right /tmp
 | `Tab` | Switch active pane |
 | `p` | Toggle preview pane |
 | `L` | Lock image for side-by-side compare (again to release) |
+| `Space` `w` | Compare page in the browser (`:web stop` ends it) |
 | `v` | Enter select mode |
 | `;` | Clear selection (selections persist across modes) |
 | `Space` | Open action menu |
@@ -119,19 +126,37 @@ directory = "blue"        # names or "#rrggbb"
 images = "auto"           # auto | off | halfblocks | sixel | kitty | iterm2
 image_font_size = [10, 20] # cell size in px, only if the terminal does not report one
 image_max_bytes = 67108864 # larger image files show their header facts only
+
+[web]
+port = 6269               # compare page, 127.0.0.1 only; 0 = any free port
+open_browser = true       # xdg-open it when this machine has a display (never over SSH)
 ```
 
 `NCOXIDE_IMAGES=sixel` (any `images` value) overrides the config for one
 shell, which is handy when the same config serves a local terminal and an
 SSH session.
 
+### Compare page over SSH
+
+The compare page (`Space w`) is served on the machine ncoxide runs on, so
+when that is a remote host the browser on your side needs the port
+forwarded. Once, in `~/.ssh/config` for that host:
+
+```
+LocalForward 6269 127.0.0.1:6269
+```
+
+The URL ncoxide shows (`http://127.0.0.1:6269/<token>/`) then works as-is
+in the local browser; terminals like WezTerm make it clickable. The token
+is new for every ncoxide run, so an old tab stops working when you restart.
+
 Terminal notes: WezTerm is recognised by its XTVERSION reply (also over
 SSH) and gets iTerm2, or Sixel through zellij — its Kitty support lacks the
 unicode placeholders ratatui-image draws with; Alacritty has no graphics
 protocol and gets half-blocks; zellij 0.45+ forwards Kitty and Sixel but
 never iTerm2. `ncoxide --probe-terminal` shows what was detected
-and why. Details in `docs/image-preview-plan.md`; the compare mode is
-designed in `docs/image-compare-plan.md`.
+and why. Details in `docs/image-preview-plan.md`; the compare mode and its
+browser page are designed in `docs/image-compare-plan.md`.
 
 ## Project status
 
