@@ -22,7 +22,7 @@ toml = "1.0"
 clap = { version = "4", features = ["derive"] }
 jiff = { version = "0.2", features = ["serde"] }
 walkdir = "2"
-dirs = "6"
+dirs = "7"
 log = "0.4"
 fern = "0.7"
 libc = "0.2"
