@@ -531,8 +531,15 @@ impl App {
                 }
                 // SwitchPane / FocusLeft / FocusRight toggle focus (handled below)
                 Action::SwitchPane | Action::FocusLeftPane | Action::FocusRightPane => {}
-                // Quit, TogglePreview and ToggleLock pass through
-                Action::Quit | Action::TogglePreview | Action::ToggleLock => {}
+                // Quit, TogglePreview, ToggleLock and the split keys pass
+                // through — `>` on the focused preview is how it grows.
+                Action::Quit
+                | Action::TogglePreview
+                | Action::ToggleLock
+                | Action::SplitGrow
+                | Action::SplitShrink
+                | Action::SplitReset
+                | Action::SetSplit(_) => {}
                 // Everything else is a no-op when preview is focused
                 _ => return,
             }
@@ -705,6 +712,13 @@ impl App {
             Action::ToggleLock => self.toggle_lock(),
             Action::OpenWeb => self.open_web(),
             Action::CloseWeb => self.web = None,
+
+            // Pane split
+            Action::SplitGrow => self.resize_focused(true),
+            Action::SplitShrink => self.resize_focused(false),
+            Action::SplitReset => self.set_split(ui::layout::SPLIT_DEFAULT),
+            Action::SetSplit(Some(n)) => self.set_split(n),
+            Action::SetSplit(None) => self.set_split(self.config.layout.split),
             Action::ViewFile => {
                 if let Some(entry) = self.active_pane_state().current_entry().cloned()
                     && !entry.is_dir
@@ -1125,6 +1139,32 @@ impl App {
             }
             _ => Action::None,
         }
+    }
+
+    /// `<` / `>`: the half the user is looking at — the active pane, or
+    /// the preview while it has focus — gets one step wider or narrower.
+    /// Growing the right half means moving the divider left. The images
+    /// re-encode by themselves: their target comes from `layout`, and
+    /// the worker coalesces per slot, so held keys cost one encode.
+    fn resize_focused(&mut self, grow: bool) {
+        let focused = if self.preview_active && self.preview_focused {
+            self.active_pane.other()
+        } else {
+            self.active_pane
+        };
+        let left_grows = (focused == PaneId::Left) == grow;
+        let step = ui::layout::SPLIT_STEP;
+        let split = if left_grows {
+            self.split.saturating_add(step)
+        } else {
+            self.split.saturating_sub(step)
+        };
+        self.set_split(split);
+    }
+
+    /// Put the divider at `split` percent (left half), within bounds.
+    fn set_split(&mut self, split: u16) {
+        self.split = ui::layout::clamp_split(split);
     }
 
     fn toggle_preview(&mut self) {
@@ -2146,6 +2186,22 @@ mod integration {
         let (left, right) = halves(&render(&app, 120, 30), 120);
         assert!(left.contains('▄') && right.contains('▄'));
 
+        // Moving the divider is a resize too: `>` on the file-list half
+        // (the locked picture) widens it, both targets change, both slots
+        // re-encode, and the pixels sit on either side of the new divider.
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 55);
+        assert!(!render(&app, 120, 30).contains('▄'));
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+        pump_until_both_encoded(&mut app, wider);
+        let screen = render(&app, 120, 30);
+        assert_eq!(divider_col(&screen), 66);
+        let (left, right) = halves(&screen, 2 * 66);
+        assert!(left.contains('▄') && right.contains('▄'), "{screen}");
+        app.handle_key(key('='));
+        app.preview_changed_at = Instant::now() - Duration::from_secs(1);
+        pump_until_both_encoded(&mut app, wider);
+
         // Overlays hide both pictures.
         app.handle_key(key('?'));
         assert!(!render(&app, 120, 30).contains('▄'));
@@ -2387,6 +2443,165 @@ mod integration {
             app.mode = Mode::Normal;
             app.input_buffer.clear();
         }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Column of the border between the two halves on row 0 of a rendered
+    /// frame: the first `┐┌` pair (right border of the left half, left
+    /// border of the right half) — i.e. the width of the left half.
+    fn divider_col(screen: &str) -> usize {
+        let row = screen.lines().next().unwrap();
+        let chars: Vec<char> = row.chars().collect();
+        chars
+            .windows(2)
+            .position(|w| w == ['┐', '┌'])
+            .map(|i| i + 1)
+            .unwrap_or_else(|| panic!("no divider in {row:?}"))
+    }
+
+    #[test]
+    fn test_split_keys_resize_the_active_pane() {
+        let (dir, mut app) = app_with("splitkeys", &["a.txt"]);
+        assert_eq!(app.split, 50);
+        assert_eq!(divider_col(&render(&app, 100, 24)), 50);
+
+        // `>` widens the active (left) pane by one step; `<` narrows it.
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 55);
+        assert_eq!(divider_col(&render(&app, 100, 24)), 55);
+        app.handle_key(key('<'));
+        app.handle_key(key('<'));
+        assert_eq!(app.split, 45);
+        assert_eq!(divider_col(&render(&app, 100, 24)), 45);
+
+        // `=` restores equal halves.
+        app.handle_key(key('='));
+        assert_eq!(app.split, 50);
+
+        // On the right pane `>` moves the divider left: the right half grows.
+        app.handle_key(code(KeyCode::Tab));
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 45);
+        let screen = render(&app, 100, 24);
+        assert_eq!(divider_col(&screen), 45);
+        // Both listings are still drawn (the file shows twice).
+        assert_eq!(screen.matches("a.txt").count(), 2, "{screen}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_split_keys_act_on_the_focused_preview() {
+        let (dir, mut app) = app_with("splitprev", &["a.txt"]);
+        app.handle_key(key('p'));
+        // List (left) focused: `>` widens the list.
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 55);
+        // Preview focused (Tab): `>` widens the preview, i.e. the right half.
+        app.handle_key(code(KeyCode::Tab));
+        assert!(app.preview_focused);
+        app.handle_key(key('>'));
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 45);
+        assert!(app.preview_focused, "resizing keeps the focus");
+        let screen = render(&app, 100, 24);
+        assert_eq!(divider_col(&screen), 45);
+        assert!(screen.contains("[PREVIEW]"), "{screen}");
+        // Esc hands focus back to the list; `>` widens the list again.
+        app.handle_key(code(KeyCode::Esc));
+        app.handle_key(key('>'));
+        assert_eq!(app.split, 50);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_split_command_sets_and_restores() {
+        let (dir, mut app) = app_with("splitcmd", &["a.txt"]);
+        app.config.layout.split = 40;
+        app.split = 40;
+
+        type_str(&mut app, ":split 30");
+        app.handle_key(code(KeyCode::Enter));
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.split, 30);
+        assert_eq!(divider_col(&render(&app, 100, 24)), 30);
+
+        // Out of range and non-numeric are no-ops.
+        for cmd in [":split 7", ":split 100", ":split abc"] {
+            type_str(&mut app, cmd);
+            app.handle_key(code(KeyCode::Enter));
+            assert_eq!(app.split, 30, "{cmd}");
+        }
+
+        // `:split` alone returns to the configured value, `=` to equal.
+        type_str(&mut app, ":split");
+        app.handle_key(code(KeyCode::Enter));
+        assert_eq!(app.split, 40);
+        app.handle_key(key('='));
+        assert_eq!(app.split, 50);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_split_stops_at_the_bounds_and_the_floor() {
+        let (dir, mut app) = app_with("splitfloor", &["a.txt"]);
+        for _ in 0..20 {
+            app.handle_key(key('<'));
+        }
+        assert_eq!(app.split, crate::ui::layout::SPLIT_MIN);
+        // 80 columns: 10 % is 8 cells, the floor keeps the list at 16.
+        let screen = render(&app, 80, 24);
+        assert_eq!(
+            divider_col(&screen),
+            crate::ui::layout::MIN_PANE_WIDTH as usize
+        );
+        assert!(screen.contains("a.txt"), "{screen}");
+        for _ in 0..40 {
+            app.handle_key(key('>'));
+        }
+        assert_eq!(app.split, crate::ui::layout::SPLIT_MAX);
+        assert_eq!(
+            divider_col(&render(&app, 80, 24)),
+            80 - crate::ui::layout::MIN_PANE_WIDTH as usize
+        );
+
+        // A config value out of range is clamped at construction.
+        let mut config = Config::default();
+        config.layout.split = 150;
+        let app2 = App::new_with_config(dir.clone(), dir.clone(), config);
+        assert_eq!(app2.split, crate::ui::layout::SPLIT_MAX);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_split_change_re_encodes_the_image_for_the_new_size() {
+        let (dir, mut app) = app_with("splitimg", &[]);
+        write_png(&dir.join("photo.png"), 40, 24);
+        let _ = app.left_pane.refresh();
+        app.enable_images(Picker::halfblocks());
+        app.handle_key(key('p'));
+
+        let area = Rect::new(0, 0, 100, 30);
+        pump_until_encoded(&mut app, area);
+        let before = app.preview_state.encoded_image().unwrap().target;
+        assert!(render(&app, 100, 30).contains('▄'));
+
+        // `<` narrows the list, so the preview target grows; the stale
+        // payload is not drawn as pixels, and the pump fetches a new one.
+        app.handle_key(key('<'));
+        let after = crate::ui::layout::preview_inner(area, PaneId::Left, app.split).as_size();
+        assert!(after.width > before.width);
+        assert!(app.preview_state.image_wants_encode(after));
+        let screen = render(&app, 100, 30);
+        assert!(!screen.contains('▄'), "{screen}");
+        assert!(screen.contains("40×24 PNG"), "{screen}");
+        pump_until_encoded(&mut app, area);
+        assert_eq!(app.preview_state.encoded_image().unwrap().target, after);
+        assert!(render(&app, 100, 30).contains('▄'));
+
         let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -137,4 +137,15 @@ pub enum Action {
     OpenWeb,
     /// Stop the companion page's server.
     CloseWeb,
+
+    // Pane split (`docs/pane-resize-plan.md`)
+    /// `>`: the focused half gets wider by one step.
+    SplitGrow,
+    /// `<`: the focused half gets narrower by one step.
+    SplitShrink,
+    /// `=`: equal halves.
+    SplitReset,
+    /// `:split N` sets the left half to N %; `:split` alone (`None`)
+    /// returns to the configured value.
+    SetSplit(Option<u16>),
 }

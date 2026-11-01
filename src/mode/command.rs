@@ -46,6 +46,20 @@ pub fn execute_command(cmd: &str) -> Action {
             Some("stop" | "off" | "close") => Action::CloseWeb,
             _ => Action::None,
         },
+        // `:split 30` puts the divider at 30 % (left half); `:split` alone
+        // returns to the configured value. Anything else is a no-op.
+        Some("split") => match parts.get(1).map(|s| s.trim()) {
+            None | Some("") => Action::SetSplit(None),
+            Some(n) => match n.parse::<u16>() {
+                Ok(n)
+                    if (crate::ui::layout::SPLIT_MIN..=crate::ui::layout::SPLIT_MAX)
+                        .contains(&n) =>
+                {
+                    Action::SetSplit(Some(n))
+                }
+                _ => Action::None,
+            },
+        },
         _ => Action::None,
     }
 }
@@ -67,5 +81,23 @@ mod tests {
             Action::SetSort(crate::pane::SortBy::Size)
         ));
         assert!(matches!(execute_command("nonsense"), Action::None));
+    }
+
+    #[test]
+    fn test_execute_command_parses_split() {
+        assert!(matches!(execute_command("split"), Action::SetSplit(None)));
+        assert!(matches!(execute_command("split  "), Action::SetSplit(None)));
+        assert!(matches!(
+            execute_command("split 30"),
+            Action::SetSplit(Some(30))
+        ));
+        assert!(matches!(
+            execute_command("split 90"),
+            Action::SetSplit(Some(90))
+        ));
+        assert!(matches!(execute_command("split 7"), Action::None));
+        assert!(matches!(execute_command("split 95"), Action::None));
+        assert!(matches!(execute_command("split abc"), Action::None));
+        assert!(matches!(execute_command("split -5"), Action::None));
     }
 }

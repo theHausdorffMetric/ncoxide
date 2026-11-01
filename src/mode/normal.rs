@@ -62,6 +62,10 @@ pub fn handle_key(key: KeyEvent, state: &mut NormalState) -> Action {
         KeyCode::Char('.') => Action::ToggleHidden,
         KeyCode::Char('p') | KeyCode::Char('P') => Action::TogglePreview,
         KeyCode::Char('L') => Action::ToggleLock,
+        // Pane split: the focused half grows / shrinks, `=` equalises.
+        KeyCode::Char('>') => Action::SplitGrow,
+        KeyCode::Char('<') => Action::SplitShrink,
+        KeyCode::Char('=') => Action::SplitReset,
         KeyCode::Char('?') => Action::ShowHelp,
 
         // Shift+J/K: move + select
