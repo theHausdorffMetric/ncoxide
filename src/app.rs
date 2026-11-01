@@ -2604,4 +2604,34 @@ mod integration {
 
         let _ = fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_narrow_list_drops_trailing_columns() {
+        let (dir, mut app) = app_with("splitcols", &["a.txt"]);
+        // 50 % of 120 = 60 cells: all four columns.
+        let screen = render(&app, 120, 24);
+        let header = screen.lines().nth(1).unwrap();
+        for col in ["Name", "Size", "Modified", "Perms"] {
+            assert!(header.contains(col), "{col} missing in {header:?}");
+        }
+        // 30 % = 36 cells: Name and Size only, on the left; the right pane
+        // (84 cells) keeps everything.
+        type_str(&mut app, ":split 30");
+        app.handle_key(code(KeyCode::Enter));
+        let screen = render(&app, 120, 24);
+        let header = screen.lines().nth(1).unwrap();
+        let (left, right) = header.split_at(36);
+        assert!(left.contains("Name") && left.contains("Size"), "{left:?}");
+        assert!(
+            !left.contains("Modified") && !left.contains("Perms"),
+            "{left:?}"
+        );
+        assert!(
+            right.contains("Modified") && right.contains("Perms"),
+            "{right:?}"
+        );
+        assert!(screen.contains("a.txt"), "{screen}");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

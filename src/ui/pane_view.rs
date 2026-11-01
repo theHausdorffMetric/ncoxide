@@ -131,8 +131,10 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Th
         .borders(Borders::ALL)
         .border_style(border_style);
 
-    // Build header
-    let header = Row::new(vec!["Name", "Size", "Modified", "Perms"]).style(
+    // Header and cells come from one column list, so they cannot disagree
+    // when a narrow pane drops the trailing columns.
+    let columns = visible_columns(area.width);
+    let header = Row::new(columns.iter().map(|c| c.title()).collect::<Vec<_>>()).style(
         Style::default()
             .fg(Color::Yellow)
             .add_modifier(Modifier::BOLD),
@@ -161,23 +163,6 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Th
             let is_selected = pane.selected.get(i).copied().unwrap_or(false);
             let is_cursor = i == pane.cursor;
 
-            let name_display = if entry.is_dir {
-                format!("{}/", entry.name)
-            } else {
-                entry.name.clone()
-            };
-
-            let size_display = if entry.is_dir {
-                "<DIR>".to_string()
-            } else {
-                platform::format_file_size(entry.size)
-            };
-
-            let time_display = entry
-                .modified
-                .map(platform::format_file_time)
-                .unwrap_or_else(|| "---".to_string());
-
             let style = match (is_cursor && is_active, is_selected) {
                 (true, true) => Style::default()
                     .bg(theme.cursor)
@@ -202,25 +187,101 @@ fn draw_single_pane(f: &mut Frame, pane: &PaneState, is_active: bool, theme: &Th
                 }
             };
 
-            Row::new(vec![
-                name_display,
-                size_display,
-                time_display,
-                entry.permissions.clone(),
-            ])
+            Row::new(
+                columns
+                    .iter()
+                    .map(|c| c.cell(entry))
+                    .collect::<Vec<String>>(),
+            )
             .style(style)
         })
         .collect();
 
-    let widths = [
-        Constraint::Min(20),
-        Constraint::Length(10),
-        Constraint::Length(16),
-        Constraint::Length(10),
-    ];
+    let widths: Vec<Constraint> = columns.iter().map(|c| c.width()).collect();
 
     // Cursor highlighting is done via row styles above; scrolling via the
     // slice — no TableState needed.
     let table = Table::new(rows, widths).header(header).block(block);
     f.render_widget(table, area);
+}
+
+/// One column of the file list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Column {
+    Name,
+    Size,
+    Modified,
+    Perms,
+}
+
+/// The four columns ask for `20 + 10 + 16 + 10` cells plus borders and
+/// spacing. A narrow pane — common once the divider moves — drops them from
+/// the right so the name keeps its room: no `Perms` below 58 cells, no
+/// `Modified` below 48, no `Size` below 32. `width` is the pane's outer
+/// width (borders included).
+pub fn visible_columns(width: u16) -> &'static [Column] {
+    use Column::*;
+    match width {
+        0..32 => &[Name],
+        32..48 => &[Name, Size],
+        48..58 => &[Name, Size, Modified],
+        _ => &[Name, Size, Modified, Perms],
+    }
+}
+
+impl Column {
+    fn title(self) -> &'static str {
+        match self {
+            Column::Name => "Name",
+            Column::Size => "Size",
+            Column::Modified => "Modified",
+            Column::Perms => "Perms",
+        }
+    }
+
+    fn width(self) -> Constraint {
+        match self {
+            Column::Name => Constraint::Min(20),
+            Column::Size => Constraint::Length(10),
+            Column::Modified => Constraint::Length(16),
+            Column::Perms => Constraint::Length(10),
+        }
+    }
+
+    fn cell(self, entry: &crate::pane::FileEntry) -> String {
+        match self {
+            Column::Name if entry.is_dir => format!("{}/", entry.name),
+            Column::Name => entry.name.clone(),
+            Column::Size if entry.is_dir => "<DIR>".to_string(),
+            Column::Size => platform::format_file_size(entry.size),
+            Column::Modified => entry
+                .modified
+                .map(platform::format_file_time)
+                .unwrap_or_else(|| "---".to_string()),
+            Column::Perms => entry.permissions.clone(),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_columns_drop_from_the_right_as_the_pane_narrows() {
+        use Column::*;
+        assert_eq!(visible_columns(80), &[Name, Size, Modified, Perms]);
+        assert_eq!(visible_columns(58), &[Name, Size, Modified, Perms]);
+        assert_eq!(visible_columns(57), &[Name, Size, Modified]);
+        assert_eq!(visible_columns(48), &[Name, Size, Modified]);
+        assert_eq!(visible_columns(47), &[Name, Size]);
+        assert_eq!(visible_columns(36), &[Name, Size]);
+        assert_eq!(visible_columns(32), &[Name, Size]);
+        assert_eq!(visible_columns(31), &[Name]);
+        assert_eq!(visible_columns(0), &[Name]);
+        // Name is always first and always present.
+        for w in 0..200 {
+            assert_eq!(visible_columns(w)[0], Name, "{w}");
+        }
+    }
 }
