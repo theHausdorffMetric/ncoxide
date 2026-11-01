@@ -47,6 +47,9 @@ pub struct App {
     pub finder_cursor: usize,
     pub preview_active: bool,
     pub preview_focused: bool,
+    /// The left half's share of the width in percent (`<` / `>` / `=` /
+    /// `:split`; `[layout] split` to start). See `ui::layout`.
+    pub split: u16,
     pub preview_state: PreviewState,
     /// The picture pinned with `L`: drawn in place of the file list while
     /// the live preview keeps following the cursor (compare mode). A path,
@@ -174,6 +177,7 @@ impl App {
             finder_cursor: 0,
             preview_active: false,
             preview_focused: false,
+            split: ui::layout::clamp_split(config.layout.split),
             preview_state: PreviewState::default(),
             locked_preview: None,
             web: None,
@@ -1215,10 +1219,11 @@ impl App {
             generation: &mut self.image_generation,
         };
         let rested = self.preview_changed_at.elapsed() >= IMAGE_DEBOUNCE;
-        let target = ui::layout::preview_inner(area, self.active_pane).as_size();
+        let target = ui::layout::preview_inner(area, self.active_pane, self.split).as_size();
         changed |= ctx.pump_slot(&mut self.preview_state, ImageSlot::Live, target, rested);
         if let Some(locked) = &mut self.locked_preview {
-            let target = ui::layout::preview_inner(area, self.active_pane.other()).as_size();
+            let target =
+                ui::layout::preview_inner(area, self.active_pane.other(), self.split).as_size();
             changed |= ctx.pump_slot(locked, ImageSlot::Locked, target, true);
         }
         changed
@@ -1948,7 +1953,7 @@ mod integration {
     /// Run the image pump until a payload for `area`'s preview pane has
     /// arrived, or a note says why none will (bounded wait).
     fn pump_until_encoded(app: &mut App, area: Rect) {
-        let target = crate::ui::layout::preview_inner(area, app.active_pane).as_size();
+        let target = crate::ui::layout::preview_inner(area, app.active_pane, app.split).as_size();
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             app.pump_images(area);
@@ -1983,7 +1988,7 @@ mod integration {
         let enc = app.preview_state.encoded_image().expect("encoded");
         assert_eq!(
             enc.target,
-            crate::ui::layout::preview_inner(area, PaneId::Left).as_size()
+            crate::ui::layout::preview_inner(area, PaneId::Left, app.split).as_size()
         );
 
         // Half-blocks render as `▄` cells inside the preview pane; the title
@@ -2002,11 +2007,9 @@ mod integration {
         // A different pane size invalidates the payload: nothing stale is
         // drawn, and the pump re-requests for the new size.
         let wider = Rect::new(0, 0, 120, 30);
-        assert!(
-            app.preview_state.image_wants_encode(
-                crate::ui::layout::preview_inner(wider, PaneId::Left).as_size()
-            )
-        );
+        assert!(app.preview_state.image_wants_encode(
+            crate::ui::layout::preview_inner(wider, PaneId::Left, app.split).as_size()
+        ));
         assert!(!render(&app, 120, 30).contains('▄'));
         pump_until_encoded(&mut app, wider);
         assert!(render(&app, 120, 30).contains('▄'));
@@ -2047,8 +2050,9 @@ mod integration {
     /// mode). Times out — and fails — if one slot is starved, which is what
     /// the old newest-job-only worker did after a resize.
     fn pump_until_both_encoded(app: &mut App, area: Rect) {
-        let live = crate::ui::layout::preview_inner(area, app.active_pane).as_size();
-        let locked = crate::ui::layout::preview_inner(area, app.active_pane.other()).as_size();
+        let live = crate::ui::layout::preview_inner(area, app.active_pane, app.split).as_size();
+        let locked =
+            crate::ui::layout::preview_inner(area, app.active_pane.other(), app.split).as_size();
         let deadline = Instant::now() + Duration::from_secs(10);
         while Instant::now() < deadline {
             app.pump_images(area);

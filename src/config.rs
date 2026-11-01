@@ -13,6 +13,7 @@ pub struct Config {
     pub colors: ColorConfig,
     pub preview: PreviewConfig,
     pub web: WebConfig,
+    pub layout: LayoutConfig,
     pub bookmarks: Vec<PathBuf>,
 }
 
@@ -88,6 +89,25 @@ impl Default for WebConfig {
             // "NCOX" on a phone keypad; unlikely to collide with anything.
             port: 6269,
             open_browser: true,
+        }
+    }
+}
+
+/// `[layout]` — where the divider between the two halves starts
+/// (`docs/pane-resize-plan.md`). `<` / `>` / `=` / `:split` move it at run
+/// time; nothing is written back here.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// The left half's share of the width in percent (10–90; out-of-range
+    /// values are clamped when the app starts).
+    pub split: u16,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        LayoutConfig {
+            split: crate::ui::layout::SPLIT_DEFAULT,
         }
     }
 }
@@ -206,6 +226,16 @@ mod tests {
         let defaults = Config::default();
         assert_eq!(defaults.web.port, 6269);
         assert!(defaults.web.open_browser);
+    }
+
+    #[test]
+    fn test_layout_config_parse_and_defaults() {
+        let config: Config = toml::from_str("[layout]\nsplit = 30\n").unwrap();
+        assert_eq!(config.layout.split, 30);
+        assert_eq!(Config::default().layout.split, 50);
+        // Out of range is not a parse error; the app clamps it at start.
+        let config: Config = toml::from_str("[layout]\nsplit = 150\n").unwrap();
+        assert_eq!(config.layout.split, 150);
     }
 
     #[test]

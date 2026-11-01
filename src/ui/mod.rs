@@ -44,7 +44,7 @@ impl Theme {
 /// Top-level draw function: lays out panes + status line.
 pub fn draw(f: &mut Frame, app: &App) {
     let theme = Theme::from_config(&app.config.colors);
-    let regions = layout::regions(f.area());
+    let regions = layout::regions(f.area(), app.split);
 
     // Pixels drawn by a graphics protocol are not in ratatui's buffer, so an
     // overlay painted over them would leave the picture showing through (or
