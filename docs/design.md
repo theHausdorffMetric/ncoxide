@@ -122,6 +122,7 @@ Helix-inspired **selection → action** modal interface. Navigate and see your t
 | `:` | Enter Command mode |
 | `.` | Toggle hidden files |
 | `p` / `P` | Toggle preview pane |
+| `<` / `>` / `=` | Focused half narrower / wider by 5 % / equal halves (`docs/pane-resize-plan.md`) |
 | `L` | Lock image for side-by-side compare (again: release / re-lock) |
 | `r` | Quick rename (Input mode) |
 | `d` | Delete (with confirm dialog) |
@@ -185,6 +186,7 @@ registers; the implementation deliberately went dual-pane-native instead.)
 | `:cd <path>` | Change directory (no path: home) |
 | `:set show_hidden` | Toggle setting |
 | `:web` / `:web stop` | Start (or show the URL of) / stop the compare page |
+| `:split [N]` | Divider at N % (left half, 10–90); no N: back to `[layout] split` |
 
 (`:shell` remains unimplemented — see "What's Not Yet Implemented".)
 
@@ -213,6 +215,16 @@ registers; the implementation deliberately went dual-pane-native instead.)
   when its file vanishes, on `L` over the locked image, or on `p`. The image
   worker coalesces jobs per slot (live / locked) so a resize re-encodes
   both. See `docs/image-compare-plan.md`.
+- **Resizable split** (`<` / `>` / `=`, `:split`): `App.split` is the left
+  half's share in percent; `ui::layout::regions(area, split)` turns it
+  into cells with a 16-cell floor per half (plain halves below 32
+  columns). The keys act on the focused half — the active pane, or the
+  preview while it has focus (`Tab`), so `>` on a picture grows the
+  picture; in compare mode the file-list half is the locked shot. Images
+  re-encode by themselves (their target comes from `layout`; the worker
+  coalesces per slot). `[layout] split` seeds it; nothing is written back.
+  Narrow lists drop `Perms` (< 58 cells), `Modified` (< 48) and `Size`
+  (< 32) from the right. See `docs/pane-resize-plan.md`.
 - **Compare page** (`Space w`, `:web`): `web.rs` serves the locked and the
   live picture to a browser from a `std::net` loopback server — full
   resolution, fit / 1:1 with synced scrolling / difference overlay, polling
@@ -308,12 +320,12 @@ ncoxide/src/
 
 ## 3. Implementation Status
 
-### Build Status (as of 0.5.0 — image preview + compare + compare page, 2026-09-27)
+### Build Status (as of 0.6.0 — resizable split, 2026-11-01)
 
 | Metric | Status |
 |--------|--------|
 | `cargo fmt` + `cargo clippy -D warnings` + build + test | Clean |
-| `cargo test` | **139 passed**, 0 failed (+2 `--ignored` large-file proofs) |
+| `cargo test` | **151 passed**, 0 failed (+2 `--ignored` large-file proofs) |
 | Edition | Rust 2024 |
 | Location | `~/dev/ideas/crates.io/ncoxide/` (submodule of the GitHub repo) |
 | Origin | `https://github.com/theHausdorffMetric/ncoxide` (dev and release in one repo since 2026-09-13) |
@@ -324,12 +336,12 @@ ncoxide/src/
 
 | Component | Lines |
 |-----------|------:|
-| Core (app, config, error, lib, main) | 2,744 |
-| Modes (mod, normal, select, space, goto, command, input) | 400 |
+| Core (app, config, error, lib, main) | 3,023 |
+| Modes (mod, normal, select, space, goto, command, input) | 447 |
 | Pane (state, navigation, selection, operations) | 1,226 |
-| UI (draw, pane_view, status_line, dialog, help) | 866 |
+| UI (draw, pane_view, status_line, dialog, help) | 1,012 |
 | Platform + Preview + Viewer + Finder + Graphics + Web | 4,889 |
-| **Total (incl. tests)** | **10,125** |
+| **Total (incl. tests)** | **10,597** |
 
 Tests are unit tests per module plus end-to-end tests that drive real key
 sequences through `App::handle_key` and render to ratatui's `TestBackend`.
@@ -348,6 +360,7 @@ sequences through `App::handle_key` and render to ratatui's `TestBackend`.
 | 8 | Image preview via ratatui-image (`docs/image-preview-plan.md`): ratatui 0.30, terminal probe + config + `--probe-terminal`, pane preview with off-thread decode, full-screen image view | Done (branch `image-preview`, 2026-09-14) |
 | 9 | Image compare (`docs/image-compare-plan.md`): `L` locks a picture into the file-list half, live preview beside it, image-to-image `j`/`k`, per-slot worker coalescing | Done (branch `image-compare`, merged 2026-09-27); ships in 0.5.0 |
 | 10 | Compare page (`docs/image-compare-plan.md`, companion variant): `Space w` / `:web` loopback HTTP server with a capability URL, browser page with fit / 1:1 synced / diff, follows the cursor; `[web]` config; dialogs sized to content | Done (branch `image-compare`, merged 2026-09-27); ships in 0.5.0 |
+| 11 | Resizable split (`docs/pane-resize-plan.md`): `<` / `>` / `=` on the focused half, `:split N`, `[layout] split`, 16-cell floor, file-list columns drop on narrow panes | Done (branch `pane-resize`, 2026-11-01); ships in 0.6.0 |
 
 ### Public API Surface
 
@@ -368,7 +381,7 @@ These were explicitly deferred from v0.1:
 - **Diff panes** — `:diff` command recognized but not implemented
 - **Progress dialog** — Dialog enum exists, no progress bar for long file operations
 - **Clipboard integration** — `y`/`p` use internal register, not system clipboard
-- **Mouse support** — Terminal mouse events not handled
+- **Mouse support** — Terminal mouse events not handled (a divider drag would map the column to `App::set_split`; see `docs/pane-resize-plan.md`)
 - **Configurable keybindings** — Config struct ready, keys are currently hardcoded
 - **Undo** — No undo for file operations
 

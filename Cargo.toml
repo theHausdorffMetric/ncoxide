@@ -1,6 +1,6 @@
 [package]
 name = "ncoxide"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 description = "Modal dual-pane file commander with helix-inspired interface"
 license = "MIT"
@@ -10,7 +10,7 @@ homepage = "https://github.com/theHausdorffMetric/ncoxide"
 readme = "README.md"
 keywords = ["file-manager", "tui", "terminal", "dual-pane", "helix"]
 categories = ["command-line-utilities", "filesystem"]
-rust-version = "1.98"
+rust-version = "1.99"
 include = ["src/**", "/README.md", "/LICENSE"]
 
 [dependencies]

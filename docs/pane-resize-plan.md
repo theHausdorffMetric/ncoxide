@@ -1,8 +1,10 @@
 # Resizable pane split — implementation plan
 
-Status: **planned, not started** (2026-11-01; mindtask task under concept
-`ncoxide`). Target release **0.6.0** (0.5.0 is published; a new feature is
-a minor bump pre-1.0). Baseline: master `4679783`, 139 tests, gate green.
+Status: **phases 1–4 implemented** on branch `pane-resize`, 2026-11-01, gate
+green (fmt, clippy `-D warnings`, 151 tests, audit); mindtask task 239 under
+concept `ncoxide`. Ships as **0.6.0** (0.5.0 is published; a new feature is a
+minor bump pre-1.0); publishing is Dan's step on Tuxedo. The decisions below
+were confirmed by Dan before phase 1. Baseline was master `4679783`, 139 tests.
 
 Goal: let the user **move the divider between the two halves of the
 screen**, and keep that choice through terminal resizes and mode changes.
@@ -16,7 +18,7 @@ Scope: the **one** split ncoxide has — the vertical divider between the
 left and the right half. The status line is fixed; there is no horizontal
 split to resize. The pager/viewer is full-screen and untouched.
 
-## Decisions (proposed; to confirm with Dan before phase 1)
+## Decisions (confirmed by Dan, 2026-11-01)
 
 - **The divider is one number: `split`, the left half's share in percent.**
   Not cells. A ratio survives terminal resizes the way a dual-pane

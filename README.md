@@ -26,6 +26,12 @@ A modal dual-pane file commander for the terminal, inspired by
   cursor, so two shots sit side by side at full height. `j`/`k` then step
   from image to image, the lock survives directory changes, `L` on another
   image re-locks, `L` on the locked one (or `p`) releases it
+- **Resizable split** -- `<` / `>` make the half you are looking at (the
+  active pane, or the preview while it has focus) narrower / wider in
+  5 % steps, `=` restores equal halves, `:split 30` puts the divider at
+  30 %; `[layout] split` sets where it starts. Narrow lists drop the
+  `Perms`, `Modified` and `Size` columns from the right so the name keeps
+  its room
 - **Compare page** -- `Space w` serves the locked and the live picture on
   `127.0.0.1` for a browser: full resolution, fit / 1:1 with synced
   scrolling / difference overlay, following the cursor (also with the
@@ -46,11 +52,11 @@ A modal dual-pane file commander for the terminal, inspired by
 - **Open in `$EDITOR`** -- press `Space` then `e` to edit the file under the
   cursor (or `Enter` on a file)
 - **Command mode** -- `:cd <dir>`, `:sort name|size|date|ext`, `:filter <text>`,
-  `:set show_hidden`, `:web` / `:web stop`, and `:q`
+  `:set show_hidden`, `:split [N]`, `:web` / `:web stop`, and `:q`
 
 ## Installation
 
-Requires **Rust 1.98+** (edition 2024).
+Requires **Rust 1.99+** (edition 2024).
 
 ```
 cargo install ncoxide
@@ -89,6 +95,7 @@ ncoxide --left ~/projects --right /tmp
 | `l` / `Enter` | Enter directory or open file |
 | `Tab` | Switch active pane |
 | `p` | Toggle preview pane |
+| `<` / `>` / `=` | Focused half narrower / wider / equal halves (`:split 30` sets the left half) |
 | `L` | Lock image for side-by-side compare (again to release) |
 | `Space` `w` | Compare page in the browser (`:web stop` ends it) |
 | `v` | Enter select mode |
@@ -131,6 +138,9 @@ image_max_bytes = 67108864 # larger image files show their header facts only
 [web]
 port = 6269               # compare page, 127.0.0.1 only; 0 = any free port
 open_browser = true       # xdg-open it when this machine has a display (never over SSH)
+
+[layout]
+split = 50                # left half in percent (10–90); `<` `>` `=` `:split` move it at run time
 ```
 
 `NCOXIDE_IMAGES=sixel` (any `images` value) overrides the config for one
