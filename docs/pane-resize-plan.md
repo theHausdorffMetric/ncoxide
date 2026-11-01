@@ -1,10 +1,10 @@
 # Resizable pane split — implementation plan
 
-Status: **phases 1–4 implemented** on branch `pane-resize`, 2026-11-01, gate
-green (fmt, clippy `-D warnings`, 151 tests, audit); mindtask task 239 under
-concept `ncoxide`. Ships as **0.6.0** (0.5.0 is published; a new feature is a
-minor bump pre-1.0); publishing is Dan's step on Tuxedo. The decisions below
-were confirmed by Dan before phase 1. Baseline was master `4679783`, 139 tests.
+Status: **shipped in 0.6.0** — implemented on branch `pane-resize` and merged
+2026-11-01 (gate green: fmt, clippy `-D warnings`, 151 tests, audit; mindtask
+task 239 under concept `ncoxide`, done), published to crates.io and tagged
+`v0.6.0` by Dan from Tuxedo the same day. The decisions below were confirmed by
+Dan before phase 1. Baseline was master `4679783`, 139 tests.
 
 Goal: let the user **move the divider between the two halves of the
 screen**, and keep that choice through terminal resizes and mode changes.
